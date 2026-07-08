@@ -100,6 +100,21 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return value;
   }
 
+  _energyKWh(entityId) {
+    const value = this._numeric(entityId);
+    if (value === null) return null;
+    const unit = String(this._unit(entityId)).trim().toLowerCase();
+    if (unit === "wh") return value / 1000;
+    if (unit === "kwh") return value;
+    if (unit === "mwh") return value * 1000;
+    if (unit === "gwh") return value * 1000000;
+    if (unit === "j") return value / 3600000;
+    if (unit === "kj") return value / 3600;
+    if (unit === "mj") return value / 3.6;
+    if (unit === "gj") return value * 277.7777777778;
+    return null;
+  }
+
   _temperature(entityId) {
     const value = this._numeric(entityId);
     if (value === null) return null;
@@ -113,6 +128,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (abs >= 1000000) return `${sign}${(value / 1000000).toLocaleString("de-DE", { maximumFractionDigits: 2 })} MW`;
     if (abs >= 1000) return `${sign}${(value / 1000).toLocaleString("de-DE", { maximumFractionDigits: 2 })} kW`;
     return `${sign}${Math.round(value).toLocaleString("de-DE")} W`;
+  }
+
+  _formatEnergyKWh(value) {
+    if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+    return `${value.toLocaleString("de-DE", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} kWh`;
   }
 
   _formatTemp(value) {
@@ -141,6 +161,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         const deviceClass = String(state.attributes?.device_class || "").toLowerCase();
         const domain = state.entity_id.split(".")[0];
         if (kind === "power") return deviceClass === "power" || ["w", "kw", "mw"].includes(unit);
+        if (kind === "energy") return deviceClass === "energy" || ["wh", "kwh", "mwh", "gwh", "j", "kj", "mj", "gj"].includes(unit);
         if (kind === "temperature") return deviceClass === "temperature" || ["°c", "°f", "c", "f"].includes(unit);
         if (kind === "percentage") return unit === "%" || deviceClass === "battery";
         if (kind === "binary") return domain === "binary_sensor" || domain === "switch";
@@ -258,6 +279,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
         main: this._formatPowerW(gridFlow.power),
         state: gridFlow.label,
         status: gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good",
+        custom: `
+          <div class="mini-line"><span>BEZUG</span><strong>${this._formatEnergyKWh(this._energyKWh(config.grid.import_energy_entity))}</strong></div>
+          <div class="mini-line"><span>EINSPEISUNG</span><strong>${this._formatEnergyKWh(this._energyKWh(config.grid.export_energy_entity))}</strong></div>`,
         metaLeft: "REFERENCE",
         metaRight: config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +",
       }));
@@ -271,6 +295,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         main: this._formatPowerW(power),
         state: power !== null && power > 10 ? "PRODUCTION" : power === null ? "UNKNOWN" : "IDLE",
         status: power === null ? "unknown" : power > 10 ? "good" : "idle",
+        custom: module.energy_entity ? `<div class="mini-line"><span>ENERGIE</span><strong>${this._formatEnergyKWh(this._energyKWh(module.energy_entity))}</strong></div>` : "",
         metaLeft: "SOURCE",
         metaRight: module.power_entity ? this._friendly(module.power_entity) : "NO ENTITY",
       }));
@@ -286,6 +311,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
         main: soc === null ? this._formatPowerW(power, true) : `${soc.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`,
         state,
         status: power === null ? "unknown" : Math.abs(power) > 10 ? "active" : "idle",
+        custom: `
+          <div class="mini-line"><span>GELADEN</span><strong>${this._formatEnergyKWh(this._energyKWh(module.charge_energy_entity))}</strong></div>
+          <div class="mini-line"><span>ENTLADEN</span><strong>${this._formatEnergyKWh(this._energyKWh(module.discharge_energy_entity))}</strong></div>`,
         metaLeft: this._formatPowerW(power, true),
         metaRight: "STORAGE",
       }));
@@ -295,7 +323,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const areaNodes = rootAreas.map((area) => this._renderAreaNode(area, 0, false)).join("");
 
     return `
-      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG</div>
+      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG + ENERGIEZÄHLER</div>
       <div class="node-row top-nodes">${topNodes.length ? topNodes.join("") : this._empty("Keine Netzreferenz, Erzeuger oder Speicher konfiguriert.")}</div>
       <div class="wire vertical ${topNodes.length ? "active" : ""}"></div>
       <div class="bus">
@@ -326,7 +354,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       main: this._formatPowerW(power),
       state: area.power_entity ? "MEASURED" : "NO METER",
       status: power === null ? "unknown" : "active",
-      custom: `${childLines}${residual !== null && children.length ? `<div class="mini-line residual"><span>NICHT ZUGEORDNET</span><strong>${this._formatPowerW(residual)}</strong></div>` : ""}`,
+      custom: `${area.energy_entity ? `<div class="mini-line"><span>ENERGIE</span><strong>${this._formatEnergyKWh(this._energyKWh(area.energy_entity))}</strong></div>` : ""}${childLines}${residual !== null && children.length ? `<div class="mini-line residual"><span>NICHT ZUGEORDNET</span><strong>${this._formatPowerW(residual)}</strong></div>` : ""}`,
       metaLeft: `${children.length} SUB AREAS`,
       metaRight: area.power_entity ? "METER" : "UNMETERED",
     });
@@ -380,6 +408,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (module.return_entity) details.push(["RL", this._formatTemp(this._temperature(module.return_entity))]);
     if (module.temperature_entity) details.push(["TEMP", this._formatTemp(this._temperature(module.temperature_entity))]);
     if (module.power_entity) details.push(["POWER", this._formatPowerW(this._powerW(module.power_entity))]);
+    if (module.energy_entity) details.push(["ENERGY", this._formatEnergyKWh(this._energyKWh(module.energy_entity))]);
 
     return this._node({
       code: typeCodes[module.type] || "HEAT",
@@ -410,7 +439,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   _renderAreas() {
     const roots = this._rootAreas();
     return `
-      <div class="system-note">ZÄHLERHIERARCHIE · DIREKTE UNTERZÄHLER WERDEN NICHT DOPPELT GEZÄHLT</div>
+      <div class="system-note">ZÄHLERHIERARCHIE · LEISTUNG UND ZUGEORDNETE ENERGIEZÄHLER</div>
       <div class="area-tree">${roots.length ? roots.map((area) => this._renderAreaTree(area, 0)).join("") : this._empty("Keine Bereiche konfiguriert.")}</div>`;
   }
 
@@ -424,6 +453,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         <span class="tree-name">${this._esc(area.name)}</span>
         <span class="tree-source">${area.power_entity ? this._esc(area.power_entity) : "NO METER"}</span>
         <strong>${this._formatPowerW(power)}</strong>
+        <strong class="tree-energy">${this._formatEnergyKWh(this._energyKWh(area.energy_entity))}</strong>
       </div>
       ${children.map((child) => this._renderAreaTree(child, depth + 1)).join("")}
       ${children.length && residual !== null ? `
@@ -432,6 +462,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
           <span class="tree-name">Nicht zugeordnet</span>
           <span class="tree-source">CALCULATED: PARENT − DIRECT CHILDREN</span>
           <strong>${this._formatPowerW(residual)}</strong>
+          <strong class="tree-energy">—</strong>
         </div>` : ""}`;
   }
 
@@ -464,6 +495,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
         <div class="form-grid">
           ${this._field("Name", `<input data-bind="grid.name" value="${this._esc(d.grid?.name || "Netz")}">`)}
           ${this._field("Leistungs-Entity", `<select data-bind="grid.power_entity">${this._entityOptions("power", d.grid?.power_entity)}</select>`)}
+          ${this._field("Bezug Energie / kWh", `<select data-bind="grid.import_energy_entity">${this._entityOptions("energy", d.grid?.import_energy_entity)}</select>`)}
+          ${this._field("Einspeisung Energie / kWh", `<select data-bind="grid.export_energy_entity">${this._entityOptions("energy", d.grid?.export_energy_entity)}</select>`)}
           ${this._field("Vorzeichen", `<select data-bind="grid.direction"><option value="import_positive" ${d.grid?.direction !== "export_positive" ? "selected" : ""}>Positiv = Netzbezug</option><option value="export_positive" ${d.grid?.direction === "export_positive" ? "selected" : ""}>Positiv = Einspeisung</option></select>`)}
         </div>
       </section>`;
@@ -479,6 +512,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
             ${this._field("Typ", `<select data-array="generation" data-index="${index}" data-field="type"><option value="solar" ${module.type === "solar" ? "selected" : ""}>PV / Solar</option><option value="generator" ${module.type === "generator" ? "selected" : ""}>Sonstiger Erzeuger</option></select>`)}
             ${this._field("Name", `<input data-array="generation" data-index="${index}" data-field="name" value="${this._esc(module.name || "")}">`)}
             ${this._field("Leistung", `<select data-array="generation" data-index="${index}" data-field="power_entity">${this._entityOptions("power", module.power_entity)}</select>`)}
+            ${this._field("Erzeugte Energie / kWh", `<select data-array="generation" data-index="${index}" data-field="energy_entity">${this._entityOptions("energy", module.energy_entity)}</select>`)}
           </div>`).join("") || `<div class="config-empty">KEINE ERZEUGER</div>`}
       </section>`;
   }
@@ -493,6 +527,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
             ${this._field("Name", `<input data-array="storage" data-index="${index}" data-field="name" value="${this._esc(module.name || "")}">`)}
             ${this._field("Leistung (+ Laden / − Entladen)", `<select data-array="storage" data-index="${index}" data-field="power_entity">${this._entityOptions("power", module.power_entity)}</select>`)}
             ${this._field("Ladezustand", `<select data-array="storage" data-index="${index}" data-field="soc_entity">${this._entityOptions("percentage", module.soc_entity)}</select>`)}
+            ${this._field("Geladene Energie / kWh", `<select data-array="storage" data-index="${index}" data-field="charge_energy_entity">${this._entityOptions("energy", module.charge_energy_entity)}</select>`)}
+            ${this._field("Entladene Energie / kWh", `<select data-array="storage" data-index="${index}" data-field="discharge_energy_entity">${this._entityOptions("energy", module.discharge_energy_entity)}</select>`)}
           </div>`).join("") || `<div class="config-empty">KEINE BATTERIESPEICHER</div>`}
       </section>`;
   }
@@ -515,6 +551,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
               ${this._field("Wärmeabgabe an", `<select data-array="heating" data-index="${index}" data-field="target"><option value="buffer" ${module.target === "buffer" ? "selected" : ""}>Pufferspeicher</option><option value="room" ${module.target !== "buffer" ? "selected" : ""}>Raum / direkt</option></select>`)}
               ${this._field("Status", `<select data-array="heating" data-index="${index}" data-field="status_entity">${this._entityOptions("any", module.status_entity)}</select>`)}
               ${this._field("Elektrische Leistung", `<select data-array="heating" data-index="${index}" data-field="power_entity">${this._entityOptions("power", module.power_entity)}</select>`)}
+              ${this._field("Elektrische Energie / kWh", `<select data-array="heating" data-index="${index}" data-field="energy_entity">${this._entityOptions("energy", module.energy_entity)}</select>`)}
               ${this._field("Vorlauf", `<select data-array="heating" data-index="${index}" data-field="supply_entity">${this._entityOptions("temperature", module.supply_entity)}</select>`)}
               ${this._field("Rücklauf", `<select data-array="heating" data-index="${index}" data-field="return_entity">${this._entityOptions("temperature", module.return_entity)}</select>`)}
               ${this._field("Haupttemperatur / Kessel / Brennraum", `<select data-array="heating" data-index="${index}" data-field="temperature_entity">${this._entityOptions("temperature", module.temperature_entity)}</select>`)}
@@ -540,7 +577,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return `
       <section class="config-card wide">
         <div class="config-head"><span>06 / METER TREE</span><strong>HAUSBEREICHE UND ZÄHLERHIERARCHIE</strong><button data-action="add-area">+ ADD AREA</button></div>
-        <div class="area-editor-head"><span>BEREICH</span><span>PARENT</span><span>LEISTUNGS-ENTITY</span><span></span></div>
+        <div class="area-editor-head"><span>BEREICH</span><span>PARENT</span><span>LEISTUNGS-ENTITY</span><span>ENERGIE-ENTITY</span><span></span></div>
         ${areas.map((area, index) => `
           <div class="area-editor-row">
             <input data-array="areas" data-index="${index}" data-field="name" value="${this._esc(area.name || "")}">
@@ -549,9 +586,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
               ${areas.filter((candidate) => candidate.id !== area.id).map((candidate) => `<option value="${this._esc(candidate.id)}" ${area.parent_id === candidate.id ? "selected" : ""}>${this._esc(candidate.name)}</option>`).join("")}
             </select>
             <select data-array="areas" data-index="${index}" data-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>
+            <select data-array="areas" data-index="${index}" data-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>
             <button class="danger" data-action="remove-area" data-index="${index}" ${areas.length <= 1 ? "disabled" : ""}>REMOVE</button>
           </div>`).join("")}
-        <div class="hint">Restlast = Bereichszähler − Summe der direkten Unterzähler. Unterzähler werden dadurch nicht doppelt zum Parent addiert.</div>
+        <div class="hint">Restlast = Bereichsleistung − Summe der direkten Unterzähler. Energie wird pro Bereich aus der zugeordneten Wh/kWh-Entity angezeigt und nicht aus dem Live-Wattwert im Browser hochgezählt.</div>
       </section>`;
   }
 
@@ -578,22 +616,22 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (!this._draft) this._draft = this._clone(this._config);
 
     if (action === "add-generation") {
-      this._draft.generation.push({ id: this._id("gen"), type: "solar", name: "PV", power_entity: "" });
+      this._draft.generation.push({ id: this._id("gen"), type: "solar", name: "PV", power_entity: "", energy_entity: "" });
       this._render();
       return;
     }
     if (action === "add-storage") {
-      this._draft.storage.push({ id: this._id("bat"), type: "battery", name: "Batterie", power_entity: "", soc_entity: "" });
+      this._draft.storage.push({ id: this._id("bat"), type: "battery", name: "Batterie", power_entity: "", soc_entity: "", charge_energy_entity: "", discharge_energy_entity: "" });
       this._render();
       return;
     }
     if (action === "add-heating") {
-      this._draft.heating.push({ id: this._id("heat"), type: "heatpump", name: "Wärmepumpe", target: "buffer", status_entity: "", power_entity: "", supply_entity: "", return_entity: "", temperature_entity: "" });
+      this._draft.heating.push({ id: this._id("heat"), type: "heatpump", name: "Wärmepumpe", target: "buffer", status_entity: "", power_entity: "", energy_entity: "", supply_entity: "", return_entity: "", temperature_entity: "" });
       this._render();
       return;
     }
     if (action === "add-area") {
-      this._draft.areas.push({ id: this._id("area"), name: "Neuer Bereich", parent_id: this._draft.areas[0]?.id || null, power_entity: "" });
+      this._draft.areas.push({ id: this._id("area"), name: "Neuer Bereich", parent_id: this._draft.areas[0]?.id || null, power_entity: "", energy_entity: "" });
       this._render();
       return;
     }
@@ -765,12 +803,13 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .distribution-box strong { color:var(--thermal); }
         .room-bank { margin-top:34px; }
         .area-tree { max-width:1500px; margin:0 auto; border-top:1px solid var(--line); }
-        .tree-row { display:grid; grid-template-columns:32px minmax(180px,1fr) minmax(260px,2fr) 130px; align-items:center; min-height:43px; border-bottom:1px solid var(--line); padding-left:calc(var(--depth) * 28px); font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .tree-row { display:grid; grid-template-columns:32px minmax(180px,1fr) minmax(260px,2fr) 130px 150px; align-items:center; min-height:43px; border-bottom:1px solid var(--line); padding-left:calc(var(--depth) * 28px); font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
         .tree-row:hover { background:rgba(255,255,255,.025); }
         .tree-branch { color:var(--line-strong); }
         .tree-name { font-weight:700; }
         .tree-source { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
         .tree-row strong { text-align:right; font-size:14px; }
+        .tree-energy { color:var(--good); }
         .residual-row .tree-name, .residual-row strong { color:var(--active); }
         .config-toolbar { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:14px 16px; border:1px solid var(--line); background:var(--panel); margin-bottom:18px; }
         .config-toolbar div { display:flex; flex-direction:column; gap:5px; }
@@ -799,7 +838,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .danger { color:var(--fault); border-color:rgba(220,98,98,.42); }
         .config-empty { color:var(--muted); padding:30px; text-align:center; font:650 10px/1 ui-monospace, monospace; letter-spacing:.08em; }
         .hint { color:var(--muted); padding:12px 14px; font-size:10px; line-height:1.5; }
-        .area-editor-head, .area-editor-row { display:grid; grid-template-columns:1fr 1fr 2fr 90px; gap:8px; padding:8px 10px; align-items:center; }
+        .area-editor-head, .area-editor-row { display:grid; grid-template-columns:1fr 1fr 2fr 2fr 90px; gap:8px; padding:8px 10px; align-items:center; }
         .area-editor-head { color:var(--muted); border-bottom:1px solid var(--line); font:650 9px/1 ui-monospace, monospace; letter-spacing:.08em; }
         .area-editor-row { border-bottom:1px solid var(--line); }
         .empty { border:1px dashed var(--line); color:var(--muted); padding:28px; text-align:center; width:100%; font:650 10px/1.5 ui-monospace, monospace; letter-spacing:.06em; }
@@ -815,7 +854,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
           .form-grid { grid-template-columns:1fr; }
           .area-editor-head { display:none; }
           .area-editor-row { grid-template-columns:1fr; padding:12px; }
-          .tree-row { grid-template-columns:26px minmax(120px,1fr) 100px; padding-left:calc(var(--depth) * 14px); }
+          .tree-row { grid-template-columns:26px minmax(120px,1fr) 92px 112px; padding-left:calc(var(--depth) * 14px); }
           .tree-source { display:none; }
           .buffer-row { grid-template-columns:34px 1fr 80px; }
           .buffer-row small { display:none; }

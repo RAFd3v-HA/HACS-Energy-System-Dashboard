@@ -1,17 +1,29 @@
-# Energy System Dashboard 0.1.1
+# Energy System Dashboard 0.1.2
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## Installation zum Testen
+## Installation / Update
 
-1. Den Ordner `custom_components/energy_system_dashboard` nach `/config/custom_components/` kopieren.
-2. Home Assistant neu starten.
-3. **Einstellungen → Geräte & Dienste → Integration hinzufügen** öffnen.
-4. Nach **Energy System Dashboard** suchen und hinzufügen.
-5. In der Seitenleiste **Energiesystem** öffnen.
-6. Im Tab **Konfiguration** vorhandene Home-Assistant-Entities zuordnen.
+1. Den bisherigen Ordner `/config/custom_components/energy_system_dashboard` vollständig ersetzen.
+2. Den Ordner `custom_components/energy_system_dashboard` aus diesem Paket nach `/config/custom_components/` kopieren.
+3. Home Assistant vollständig neu starten.
+4. In der Seitenleiste **Energiesystem** öffnen.
+5. Im Tab **Konfiguration** die zusätzlichen Energie-Entities zuordnen und **Speichern**.
 
-## V0.1
+Die bestehende Dashboard-Konfiguration wird weiterverwendet. Neue kWh-Felder starten leer und müssen einmal zugeordnet werden.
+
+## Neu in 0.1.2
+
+- separate Energie-Entities (Wh/kWh) zusätzlich zu W/kW
+- Netz: Bezug und Einspeisung jeweils mit eigener Energie-Entity
+- PV/Erzeuger: erzeugte Energie
+- Batteriespeicher: geladene und entladene Energie
+- Wärmeerzeuger: elektrische Energie
+- Hausbereiche: eigene Energie-Entity je Bereich
+- automatische Umrechnung gängiger Energieeinheiten auf kWh
+- keine Browser-Integration von Live-Wattwerten; es werden echte Home-Assistant-Energiezähler verwendet
+
+## Bereits enthalten
 
 - optionale Netzreferenz
 - modulare Erzeuger
@@ -19,9 +31,9 @@ Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 - getrennte Wärmepumpe, Heizkessel, Heizstab und Kamin
 - optionaler Pufferspeicher mit beliebig vielen Temperaturfühlern
 - hierarchische Hausbereiche mit Parent/Child-Zählern
-- automatische Restlast pro Bereich: Bereichszähler minus direkte Unterzähler
+- automatische Restlast pro Bereich für aktuelle Leistung
 - technisches Single-Line-/SCADA-Design
 - Konfiguration persistent in Home Assistant `.storage`
 - Echtzeitwerte direkt aus vorhandenen Home-Assistant-Entities
 
-Die V0.1 kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Sie verwendet ausschließlich die bereits in Home Assistant vorhandenen Entities.
+Die Integration kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Sie verwendet ausschließlich die bereits in Home Assistant vorhandenen Entities.

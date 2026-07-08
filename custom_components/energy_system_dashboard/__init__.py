@@ -31,12 +31,14 @@ from .const import (
 )
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 1,
+    "version": 2,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
         "name": "Netz",
         "power_entity": "",
+        "import_energy_entity": "",
+        "export_energy_entity": "",
         "direction": "import_positive",
     },
     "generation": [],
@@ -53,6 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "name": "Haus",
             "parent_id": None,
             "power_entity": "",
+            "energy_entity": "",
         }
     ],
 }
@@ -95,7 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.1.1",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.1.2",
                 }
             },
             require_admin=False,
@@ -150,16 +153,65 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and break invalid area parent cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config)
-    normalized["version"] = 1
+    normalized["version"] = 2
 
     for key in ("generation", "storage", "heating", "areas"):
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
 
-    if not isinstance(normalized.get("grid"), dict):
-        normalized["grid"] = dict(DEFAULT_CONFIG["grid"])
-    if not isinstance(normalized.get("buffer"), dict):
-        normalized["buffer"] = dict(DEFAULT_CONFIG["buffer"])
+    raw_grid = normalized.get("grid")
+    normalized["grid"] = {
+        **DEFAULT_CONFIG["grid"],
+        **(raw_grid if isinstance(raw_grid, dict) else {}),
+    }
+    raw_buffer = normalized.get("buffer")
+    normalized["buffer"] = {
+        **DEFAULT_CONFIG["buffer"],
+        **(raw_buffer if isinstance(raw_buffer, dict) else {}),
+    }
+
+    for key in ("power_entity", "import_energy_entity", "export_energy_entity"):
+        normalized["grid"][key] = str(normalized["grid"].get(key) or "")
+
+    generation: list[dict[str, Any]] = []
+    for index, raw_module in enumerate(normalized["generation"]):
+        if not isinstance(raw_module, dict):
+            continue
+        module = dict(raw_module)
+        module["id"] = str(module.get("id") or f"gen_{index}")
+        module["type"] = str(module.get("type") or "solar")
+        module["name"] = str(module.get("name") or f"Erzeuger {index + 1}")
+        module["power_entity"] = str(module.get("power_entity") or "")
+        module["energy_entity"] = str(module.get("energy_entity") or "")
+        generation.append(module)
+    normalized["generation"] = generation
+
+    storage: list[dict[str, Any]] = []
+    for index, raw_module in enumerate(normalized["storage"]):
+        if not isinstance(raw_module, dict):
+            continue
+        module = dict(raw_module)
+        module["id"] = str(module.get("id") or f"bat_{index}")
+        module["type"] = str(module.get("type") or "battery")
+        module["name"] = str(module.get("name") or f"Batterie {index + 1}")
+        for key in ("power_entity", "soc_entity", "charge_energy_entity", "discharge_energy_entity"):
+            module[key] = str(module.get(key) or "")
+        storage.append(module)
+    normalized["storage"] = storage
+
+    heating: list[dict[str, Any]] = []
+    for index, raw_module in enumerate(normalized["heating"]):
+        if not isinstance(raw_module, dict):
+            continue
+        module = dict(raw_module)
+        module["id"] = str(module.get("id") or f"heat_{index}")
+        module["type"] = str(module.get("type") or "heatpump")
+        module["name"] = str(module.get("name") or f"Wärmeerzeuger {index + 1}")
+        module["target"] = str(module.get("target") or "buffer")
+        for key in ("status_entity", "power_entity", "energy_entity", "supply_entity", "return_entity", "temperature_entity"):
+            module[key] = str(module.get(key) or "")
+        heating.append(module)
+    normalized["heating"] = heating
 
     if not normalized["areas"]:
         normalized["areas"] = [dict(DEFAULT_CONFIG["areas"][0])]
@@ -180,6 +232,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         area["id"] = area_id
         area["name"] = str(area.get("name") or f"Bereich {index + 1}")
         area["power_entity"] = str(area.get("power_entity") or "")
+        area["energy_entity"] = str(area.get("energy_entity") or "")
         area["parent_id"] = area.get("parent_id") or None
         areas.append(area)
 
