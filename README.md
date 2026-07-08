@@ -1,4 +1,4 @@
-# Energy System Dashboard 0.1.0
+# Energy System Dashboard 0.1.1
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
