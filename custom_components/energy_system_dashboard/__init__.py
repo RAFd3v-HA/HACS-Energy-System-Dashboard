@@ -30,8 +30,10 @@ from .const import (
     STORAGE_VERSION,
 )
 
+DEFAULT_LEVEL_ID = "level_0"
+
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 2,
+    "version": 3,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -49,13 +51,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "name": "Pufferspeicher",
         "temperature_entities": [],
     },
+    "levels": [
+        {"id": DEFAULT_LEVEL_ID, "name": "Gebäude", "order": 0},
+    ],
     "areas": [
         {
             "id": "house",
             "name": "Haus",
-            "parent_id": None,
+            "level_id": DEFAULT_LEVEL_ID,
+            "mode": "measured",
             "power_entity": "",
             "energy_entity": "",
+            "calculation_type": "difference",
+            "basis_area_id": "",
+            "source_area_ids": [],
+            "terms": [],
+            "layout": {"x": 5, "y": 2, "w": 4, "h": 2},
         }
     ],
 }
@@ -98,7 +109,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.1.3",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.2.0",
                 }
             },
             require_admin=False,
@@ -126,7 +137,7 @@ async def websocket_get_config(
     """Return the persisted dashboard configuration."""
     store: Store[dict[str, Any]] = hass.data[DOMAIN][DATA_STORE]
     data = await store.async_load()
-    connection.send_result(msg["id"], data or DEFAULT_CONFIG)
+    connection.send_result(msg["id"], _normalize_config(data or DEFAULT_CONFIG))
 
 
 @websocket_api.require_admin
@@ -149,13 +160,21 @@ async def websocket_save_config(
     connection.send_result(msg["id"], {"saved": True, "config": config})
 
 
-def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize stored config and break invalid area parent cycles."""
-    normalized = dict(DEFAULT_CONFIG)
-    normalized.update(config)
-    normalized["version"] = 2
+def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(maximum, number))
 
-    for key in ("generation", "storage", "heating", "areas"):
+
+def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Normalize stored config and reject invalid calculation cycles."""
+    normalized = dict(DEFAULT_CONFIG)
+    normalized.update(config if isinstance(config, dict) else {})
+    normalized["version"] = 3
+
+    for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
 
@@ -194,7 +213,12 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         module["id"] = str(module.get("id") or f"bat_{index}")
         module["type"] = str(module.get("type") or "battery")
         module["name"] = str(module.get("name") or f"Batterie {index + 1}")
-        for key in ("power_entity", "soc_entity", "charge_energy_entity", "discharge_energy_entity"):
+        for key in (
+            "power_entity",
+            "soc_entity",
+            "charge_energy_entity",
+            "discharge_energy_entity",
+        ):
             module[key] = str(module.get(key) or "")
         storage.append(module)
     normalized["storage"] = storage
@@ -208,10 +232,47 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         module["type"] = str(module.get("type") or "heatpump")
         module["name"] = str(module.get("name") or f"Wärmeerzeuger {index + 1}")
         module["target"] = str(module.get("target") or "buffer")
-        for key in ("status_entity", "power_entity", "energy_entity", "supply_entity", "return_entity", "temperature_entity"):
+        for key in (
+            "status_entity",
+            "power_entity",
+            "energy_entity",
+            "supply_entity",
+            "return_entity",
+            "temperature_entity",
+        ):
             module[key] = str(module.get(key) or "")
         heating.append(module)
     normalized["heating"] = heating
+
+    # Levels / building floors. Existing V0.1 configs are migrated to one level.
+    levels: list[dict[str, Any]] = []
+    used_level_ids: set[str] = set()
+    for index, raw_level in enumerate(normalized["levels"]):
+        if not isinstance(raw_level, dict):
+            continue
+        level = dict(raw_level)
+        level_id = str(level.get("id") or f"level_{index}")
+        base_id = level_id
+        suffix = 1
+        while level_id in used_level_ids:
+            suffix += 1
+            level_id = f"{base_id}_{suffix}"
+        used_level_ids.add(level_id)
+        levels.append(
+            {
+                "id": level_id,
+                "name": str(level.get("name") or f"Ebene {index + 1}"),
+                "order": _safe_int(level.get("order"), index, -100, 100),
+            }
+        )
+    if not levels:
+        levels = [dict(DEFAULT_CONFIG["levels"][0])]
+    levels.sort(key=lambda item: (item["order"], item["name"]))
+    for index, level in enumerate(levels):
+        level["order"] = index
+    normalized["levels"] = levels
+    valid_level_ids = {level["id"] for level in levels}
+    default_level_id = levels[0]["id"]
 
     if not normalized["areas"]:
         normalized["areas"] = [dict(DEFAULT_CONFIG["areas"][0])]
@@ -229,28 +290,108 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             suffix += 1
             area_id = f"{base_id}_{suffix}"
         used_ids.add(area_id)
-        area["id"] = area_id
-        area["name"] = str(area.get("name") or f"Bereich {index + 1}")
-        area["power_entity"] = str(area.get("power_entity") or "")
-        area["energy_entity"] = str(area.get("energy_entity") or "")
-        area["parent_id"] = area.get("parent_id") or None
-        areas.append(area)
+
+        raw_layout = area.get("layout") if isinstance(area.get("layout"), dict) else {}
+        width = _safe_int(raw_layout.get("w"), 3, 1, 6)
+        height = _safe_int(raw_layout.get("h"), 2, 1, 4)
+        x = _safe_int(raw_layout.get("x"), 1 + ((index * 3) % 10), 1, 12)
+        y = _safe_int(raw_layout.get("y"), 1 + ((index // 4) * 2), 1, 12)
+        x = min(x, 13 - width)
+        y = min(y, 13 - height)
+
+        mode = str(area.get("mode") or "measured")
+        if mode not in {"measured", "calculated"}:
+            mode = "measured"
+        calculation_type = str(area.get("calculation_type") or "difference")
+        if calculation_type not in {"difference", "sum", "custom"}:
+            calculation_type = "difference"
+
+        source_area_ids = area.get("source_area_ids")
+        if not isinstance(source_area_ids, list):
+            source_area_ids = []
+        terms = area.get("terms")
+        if not isinstance(terms, list):
+            terms = []
+
+        areas.append(
+            {
+                "id": area_id,
+                "name": str(area.get("name") or f"Bereich {index + 1}"),
+                "level_id": str(area.get("level_id") or default_level_id),
+                "mode": mode,
+                "power_entity": str(area.get("power_entity") or ""),
+                "energy_entity": str(area.get("energy_entity") or ""),
+                "calculation_type": calculation_type,
+                "basis_area_id": str(area.get("basis_area_id") or ""),
+                "source_area_ids": [str(item) for item in source_area_ids if item],
+                "terms": [
+                    {
+                        "op": "-" if str(term.get("op")) == "-" else "+",
+                        "area_id": str(term.get("area_id") or ""),
+                    }
+                    for term in terms
+                    if isinstance(term, dict)
+                ],
+                "layout": {"x": x, "y": y, "w": width, "h": height},
+            }
+        )
 
     valid_ids = {area["id"] for area in areas}
-    by_id = {area["id"]: area for area in areas}
     for area in areas:
-        if area["parent_id"] not in valid_ids or area["parent_id"] == area["id"]:
-            area["parent_id"] = None
-            continue
+        if area["level_id"] not in valid_level_ids:
+            area["level_id"] = default_level_id
+        if area["basis_area_id"] not in valid_ids or area["basis_area_id"] == area["id"]:
+            area["basis_area_id"] = ""
+        area["source_area_ids"] = [
+            item
+            for item in area["source_area_ids"]
+            if item in valid_ids and item != area["id"]
+        ]
+        area["terms"] = [
+            term
+            for term in area["terms"]
+            if term["area_id"] in valid_ids and term["area_id"] != area["id"]
+        ]
 
-        seen = {area["id"]}
-        parent_id = area["parent_id"]
-        while parent_id is not None:
-            if parent_id in seen:
-                area["parent_id"] = None
-                break
-            seen.add(parent_id)
-            parent_id = by_id.get(parent_id, {}).get("parent_id")
+    by_id = {area["id"]: area for area in areas}
+
+    def dependencies(area: dict[str, Any]) -> set[str]:
+        if area["mode"] != "calculated":
+            return set()
+        if area["calculation_type"] == "difference":
+            result = set(area["source_area_ids"])
+            if area["basis_area_id"]:
+                result.add(area["basis_area_id"])
+            return result
+        if area["calculation_type"] == "sum":
+            return set(area["source_area_ids"])
+        return {term["area_id"] for term in area["terms"]}
+
+    def has_cycle(start_id: str) -> bool:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(area_id: str) -> bool:
+            if area_id in visiting:
+                return True
+            if area_id in visited:
+                return False
+            visiting.add(area_id)
+            for dependency in dependencies(by_id[area_id]):
+                if dependency in by_id and visit(dependency):
+                    return True
+            visiting.remove(area_id)
+            visited.add(area_id)
+            return False
+
+        return visit(start_id)
+
+    # A malformed imported config should never be able to recurse forever in the panel.
+    for area in areas:
+        if has_cycle(area["id"]):
+            area["basis_area_id"] = ""
+            area["source_area_ids"] = []
+            area["terms"] = []
 
     normalized["areas"] = areas or [dict(DEFAULT_CONFIG["areas"][0])]
     return normalized

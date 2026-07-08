@@ -10,8 +10,18 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this._loading = false;
     this._saving = false;
     this._tab = "electric";
+    this._dailyEnergy = {};
+    this._dailyLoading = false;
+    this._layoutLevelId = null;
+    this._selectedAreaId = null;
+    this._dragAreaId = null;
+    this._dailyRefreshTimer = null;
     this._boundClick = (event) => this._onClick(event);
     this._boundChange = (event) => this._onChange(event);
+    this._boundDragStart = (event) => this._onDragStart(event);
+    this._boundDragOver = (event) => this._onDragOver(event);
+    this._boundDrop = (event) => this._onDrop(event);
+    this._boundDragEnd = () => { this._dragAreaId = null; };
   }
 
   set hass(value) {
@@ -35,13 +45,26 @@ class EnergySystemDashboardPanel extends HTMLElement {
   connectedCallback() {
     this.shadowRoot.addEventListener("click", this._boundClick);
     this.shadowRoot.addEventListener("change", this._boundChange);
+    this.shadowRoot.addEventListener("dragstart", this._boundDragStart);
+    this.shadowRoot.addEventListener("dragover", this._boundDragOver);
+    this.shadowRoot.addEventListener("drop", this._boundDrop);
+    this.shadowRoot.addEventListener("dragend", this._boundDragEnd);
     this._renderLoading();
     if (this._hass && !this._loaded && !this._loading) this._loadConfig();
+    if (!this._dailyRefreshTimer) {
+      this._dailyRefreshTimer = window.setInterval(() => this._refreshDailyEnergy(), 60000);
+    }
   }
 
   disconnectedCallback() {
     this.shadowRoot.removeEventListener("click", this._boundClick);
     this.shadowRoot.removeEventListener("change", this._boundChange);
+    this.shadowRoot.removeEventListener("dragstart", this._boundDragStart);
+    this.shadowRoot.removeEventListener("dragover", this._boundDragOver);
+    this.shadowRoot.removeEventListener("drop", this._boundDrop);
+    this.shadowRoot.removeEventListener("dragend", this._boundDragEnd);
+    if (this._dailyRefreshTimer) window.clearInterval(this._dailyRefreshTimer);
+    this._dailyRefreshTimer = null;
   }
 
   async _loadConfig() {
@@ -54,7 +77,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._config = config;
       this._draft = this._clone(config);
       this._loaded = true;
+      this._syncLayoutState();
       this._render();
+      await this._refreshDailyEnergy();
     } catch (error) {
       this._renderError(`Konfiguration konnte nicht geladen werden: ${error?.message || error}`);
     } finally {
@@ -100,7 +125,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return value;
   }
 
-  _energyKWh(entityId) {
+  _energyStateKWh(entityId) {
     const value = this._numeric(entityId);
     if (value === null) return null;
     const unit = String(this._unit(entityId)).trim().toLowerCase();
@@ -113,6 +138,81 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (unit === "mj") return value / 3.6;
     if (unit === "gj") return value * 277.7777777778;
     return null;
+  }
+
+  _syncLayoutState(config = this._draft || this._config) {
+    const levels = this._sortedLevels(config);
+    if (!levels.some((level) => level.id === this._layoutLevelId)) this._layoutLevelId = levels[0]?.id || null;
+    if (!(config?.areas || []).some((area) => area.id === this._selectedAreaId)) {
+      this._selectedAreaId = (config?.areas || []).find((area) => area.level_id === this._layoutLevelId)?.id || config?.areas?.[0]?.id || null;
+    }
+  }
+
+  _energyEntityIds(config = this._config) {
+    const ids = [];
+    const add = (id) => { if (id && !ids.includes(id)) ids.push(id); };
+    add(config?.grid?.import_energy_entity);
+    add(config?.grid?.export_energy_entity);
+    for (const module of config?.generation || []) add(module.energy_entity);
+    for (const module of config?.storage || []) {
+      add(module.charge_energy_entity);
+      add(module.discharge_energy_entity);
+    }
+    for (const module of config?.heating || []) add(module.energy_entity);
+    for (const area of config?.areas || []) add(area.energy_entity);
+    return ids;
+  }
+
+  _dailyEnergyKWh(entityId) {
+    if (!entityId) return null;
+    const cached = this._dailyEnergy[entityId];
+    if (cached !== undefined) return cached;
+    const state = this._state(entityId);
+    const label = `${entityId} ${state?.attributes?.friendly_name || ""}`.toLowerCase();
+    if (["today", "daily", "heute", "tag"].some((token) => label.includes(token))) {
+      return this._energyStateKWh(entityId);
+    }
+    return null;
+  }
+
+  async _refreshDailyEnergy() {
+    if (!this._hass || !this._loaded || this._dailyLoading) return;
+    const ids = this._energyEntityIds(this._config);
+    if (!ids.length) {
+      this._dailyEnergy = {};
+      return;
+    }
+    this._dailyLoading = true;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    try {
+      const result = await this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: start.toISOString(),
+        end_time: new Date().toISOString(),
+        statistic_ids: ids,
+        period: "day",
+        types: ["change"],
+        units: { energy: "kWh" },
+      });
+      const daily = {};
+      for (const entityId of ids) {
+        const rows = Array.isArray(result?.[entityId]) ? result[entityId] : [];
+        const changes = rows.map((row) => Number(row?.change)).filter((value) => Number.isFinite(value));
+        if (changes.length) daily[entityId] = changes.reduce((sum, value) => sum + value, 0);
+        else {
+          const state = this._state(entityId);
+          const label = `${entityId} ${state?.attributes?.friendly_name || ""}`.toLowerCase();
+          daily[entityId] = ["today", "daily", "heute", "tag"].some((token) => label.includes(token)) ? this._energyStateKWh(entityId) : null;
+        }
+      }
+      this._dailyEnergy = daily;
+      if (this.isConnected) this._render();
+    } catch (error) {
+      console.warn("Energy System Dashboard: Tagesenergie konnte nicht geladen werden", error);
+    } finally {
+      this._dailyLoading = false;
+    }
   }
 
   _temperature(entityId) {
@@ -209,25 +309,135 @@ class EnergySystemDashboardPanel extends HTMLElement {
     };
   }
 
-  _areaChildren(parentId, config = this._config) {
-    return (config?.areas || []).filter((area) => area.parent_id === parentId);
+  _areaById(areaId, config = this._config) {
+    return (config?.areas || []).find((area) => area.id === areaId) || null;
   }
 
-  _areaResidual(area, config = this._config) {
-    const total = this._powerW(area.power_entity);
-    if (total === null) return null;
-    const children = this._areaChildren(area.id, config);
-    const childPowers = children.map((child) => this._powerW(child.power_entity));
-    if (childPowers.some((value) => value === null)) return null;
-    return total - childPowers.reduce((sum, value) => sum + value, 0);
+  _sortedLevels(config = this._config) {
+    return [...(config?.levels || [])].sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
   }
 
-  _rootAreas(config = this._config) {
-    return (config?.areas || []).filter((area) => !area.parent_id || !(config.areas || []).some((candidate) => candidate.id === area.parent_id));
+  _levelById(levelId, config = this._config) {
+    return (config?.levels || []).find((level) => level.id === levelId) || null;
+  }
+
+  _calculationDependencies(area, config = this._config) {
+    if (!area || area.mode !== "calculated") return [];
+    if (area.calculation_type === "difference") {
+      return [area.basis_area_id, ...(area.source_area_ids || [])].filter(Boolean);
+    }
+    if (area.calculation_type === "sum") return [...(area.source_area_ids || [])];
+    return (area.terms || []).map((term) => term.area_id).filter(Boolean);
+  }
+
+  _dependsOn(areaId, targetId, config = this._draft || this._config, stack = new Set()) {
+    if (!areaId || stack.has(areaId)) return false;
+    if (areaId === targetId) return true;
+    stack.add(areaId);
+    const area = this._areaById(areaId, config);
+    return this._calculationDependencies(area, config).some((dependency) => this._dependsOn(dependency, targetId, config, new Set(stack)));
+  }
+
+  _areaOptionsForCalculation(currentAreaId, selected, config = this._draft || this._config) {
+    return `<option value="">— Bereich auswählen —</option>` + (config?.areas || [])
+      .filter((area) => area.id !== currentAreaId && !this._dependsOn(area.id, currentAreaId, config))
+      .map((area) => `<option value="${this._esc(area.id)}" ${area.id === selected ? "selected" : ""}>${this._esc(area.name)}</option>`)
+      .join("");
+  }
+
+  _areaPower(area, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return null;
+    if (area.mode !== "calculated") return this._powerW(area.power_entity);
+    stack.add(area.id);
+    const valueOf = (areaId) => this._areaPower(this._areaById(areaId, config), config, new Set(stack));
+    if (area.calculation_type === "difference") {
+      const base = valueOf(area.basis_area_id);
+      const values = (area.source_area_ids || []).map(valueOf);
+      if (base === null || values.some((value) => value === null)) return null;
+      return base - values.reduce((sum, value) => sum + value, 0);
+    }
+    if (area.calculation_type === "sum") {
+      const values = (area.source_area_ids || []).map(valueOf);
+      if (!values.length || values.some((value) => value === null)) return null;
+      return values.reduce((sum, value) => sum + value, 0);
+    }
+    const terms = area.terms || [];
+    if (!terms.length) return null;
+    let result = 0;
+    for (const term of terms) {
+      const value = valueOf(term.area_id);
+      if (value === null) return null;
+      result += term.op === "-" ? -value : value;
+    }
+    return result;
+  }
+
+  _areaTodayEnergy(area, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return null;
+    if (area.mode !== "calculated") return this._dailyEnergyKWh(area.energy_entity);
+    stack.add(area.id);
+    const valueOf = (areaId) => this._areaTodayEnergy(this._areaById(areaId, config), config, new Set(stack));
+    if (area.calculation_type === "difference") {
+      const base = valueOf(area.basis_area_id);
+      const values = (area.source_area_ids || []).map(valueOf);
+      if (base === null || values.some((value) => value === null)) return null;
+      return base - values.reduce((sum, value) => sum + value, 0);
+    }
+    if (area.calculation_type === "sum") {
+      const values = (area.source_area_ids || []).map(valueOf);
+      if (!values.length || values.some((value) => value === null)) return null;
+      return values.reduce((sum, value) => sum + value, 0);
+    }
+    const terms = area.terms || [];
+    if (!terms.length) return null;
+    let result = 0;
+    for (const term of terms) {
+      const value = valueOf(term.area_id);
+      if (value === null) return null;
+      result += term.op === "-" ? -value : value;
+    }
+    return result;
+  }
+
+  _areaFormula(area, config = this._config) {
+    if (!area || area.mode !== "calculated") return area?.power_entity ? "DIREKT GEMESSEN" : "KEIN ZÄHLER";
+    const nameOf = (id) => this._areaById(id, config)?.name || "?";
+    if (area.calculation_type === "difference") {
+      if (!area.basis_area_id) return "BASIS FEHLT";
+      return `${nameOf(area.basis_area_id)}${(area.source_area_ids || []).map((id) => ` − ${nameOf(id)}`).join("")}`;
+    }
+    if (area.calculation_type === "sum") {
+      return (area.source_area_ids || []).length ? (area.source_area_ids || []).map(nameOf).join(" + ") : "QUELLEN FEHLEN";
+    }
+    return (area.terms || []).length ? (area.terms || []).map((term, index) => `${index ? term.op : term.op === "-" ? "−" : ""}${nameOf(term.area_id)}`).join(" ") : "TERME FEHLEN";
+  }
+
+  _decompositionChildren(areaId, config = this._config) {
+    const children = new Set();
+    for (const area of config?.areas || []) {
+      if (area.mode === "calculated" && area.calculation_type === "difference" && area.basis_area_id === areaId) {
+        for (const sourceId of area.source_area_ids || []) children.add(sourceId);
+        children.add(area.id);
+      }
+    }
+    const area = this._areaById(areaId, config);
+    if (area?.mode === "calculated" && area.calculation_type === "sum") {
+      for (const sourceId of area.source_area_ids || []) children.add(sourceId);
+    }
+    if (area?.mode === "calculated" && area.calculation_type === "custom") {
+      for (const term of area.terms || []) children.add(term.area_id);
+    }
+    children.delete(areaId);
+    return [...children].filter(Boolean);
   }
 
   _leafAreas(config = this._config) {
-    return (config?.areas || []).filter((area) => this._areaChildren(area.id, config).length === 0);
+    return (config?.areas || []).filter((area) => this._decompositionChildren(area.id, config).length === 0);
+  }
+
+  _levelRows(level, config = this._config) {
+    const areas = (config?.areas || []).filter((area) => area.level_id === level.id);
+    return Math.max(6, ...areas.map((area) => Number(area.layout?.y || 1) + Number(area.layout?.h || 2) - 1));
   }
 
   _renderLoading() {
@@ -284,8 +494,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
         state: gridFlow.label,
         status: gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good",
         custom: `
-          <div class="mini-line"><span>BEZUG</span><strong>${this._formatEnergyKWh(this._energyKWh(config.grid.import_energy_entity))}</strong></div>
-          <div class="mini-line"><span>EINSPEISUNG</span><strong>${this._formatEnergyKWh(this._energyKWh(config.grid.export_energy_entity))}</strong></div>`,
+          <div class="mini-line"><span>BEZUG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.import_energy_entity))}</strong></div>
+          <div class="mini-line"><span>EINSPEISUNG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.export_energy_entity))}</strong></div>`,
         metaLeft: "REFERENCE",
         metaRight: config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +",
       }));
@@ -299,7 +509,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         main: this._formatPowerW(power),
         state: power !== null && power > 10 ? "PRODUCTION" : power === null ? "UNKNOWN" : "IDLE",
         status: power === null ? "unknown" : power > 10 ? "good" : "idle",
-        custom: module.energy_entity ? `<div class="mini-line"><span>ENERGIE</span><strong>${this._formatEnergyKWh(this._energyKWh(module.energy_entity))}</strong></div>` : "",
+        custom: module.energy_entity ? `<div class="mini-line"><span>HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity))}</strong></div>` : "",
         metaLeft: "SOURCE",
         metaRight: module.power_entity ? this._friendly(module.power_entity) : "NO ENTITY",
       }));
@@ -316,18 +526,18 @@ class EnergySystemDashboardPanel extends HTMLElement {
         state,
         status: power === null ? "unknown" : Math.abs(power) > 10 ? "active" : "idle",
         custom: `
-          <div class="mini-line"><span>GELADEN</span><strong>${this._formatEnergyKWh(this._energyKWh(module.charge_energy_entity))}</strong></div>
-          <div class="mini-line"><span>ENTLADEN</span><strong>${this._formatEnergyKWh(this._energyKWh(module.discharge_energy_entity))}</strong></div>`,
+          <div class="mini-line"><span>LADEN HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.charge_energy_entity))}</strong></div>
+          <div class="mini-line"><span>ENTLADEN HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.discharge_energy_entity))}</strong></div>`,
         metaLeft: this._formatPowerW(power, true),
         metaRight: "STORAGE",
       }));
     }
 
-    const rootAreas = this._rootAreas();
-    const areaNodes = rootAreas.map((area) => this._renderAreaNode(area, 0, false)).join("");
+    const leafAreas = this._leafAreas();
+    const areaNodes = leafAreas.map((area) => this._renderAreaNode(area)).join("");
 
     return `
-      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG + ENERGIEZÄHLER</div>
+      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG + ENERGIE HEUTE</div>
       <div class="node-row top-nodes">${topNodes.length ? topNodes.join("") : this._empty("Keine Netzreferenz, Erzeuger oder Speicher konfiguriert.")}</div>
       <div class="wire vertical ${topNodes.length ? "active" : ""}"></div>
       <div class="bus">
@@ -339,41 +549,24 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _housePowerLabel() {
-    const leafAreas = this._leafAreas();
-    const seenEntities = new Set();
-    const measured = [];
-
-    for (const area of leafAreas) {
-      const entityId = String(area.power_entity || "").trim();
-      if (!entityId || seenEntities.has(entityId)) continue;
-
-      const power = this._powerW(entityId);
-      if (power === null) continue;
-
-      seenEntities.add(entityId);
-      measured.push(power);
-    }
-
-    if (!measured.length) return "KEIN MESSWERT";
-    return this._formatPowerW(measured.reduce((sum, value) => sum + value, 0));
+    const values = this._leafAreas().map((area) => this._areaPower(area)).filter((value) => value !== null && Number.isFinite(value));
+    if (!values.length) return "KEIN MESSWERT";
+    return this._formatPowerW(values.reduce((sum, value) => sum + value, 0));
   }
 
-  _renderAreaNode(area, depth = 0, includeNested = true) {
-    const power = this._powerW(area.power_entity);
-    const residual = this._areaResidual(area);
-    const children = this._areaChildren(area.id);
-    const childLines = children
-      .map((child) => `<div class="mini-line"><span>${this._esc(child.name)}</span><strong>${this._formatPowerW(this._powerW(child.power_entity))}</strong></div>`)
-      .join("");
+  _renderAreaNode(area) {
+    const power = this._areaPower(area);
+    const today = this._areaTodayEnergy(area);
+    const level = this._levelById(area.level_id);
     return this._node({
-      code: depth === 0 ? "AREA" : "SUB",
+      code: area.mode === "calculated" ? "C" : "M",
       name: area.name,
       main: this._formatPowerW(power),
-      state: area.power_entity ? "MEASURED" : "NO METER",
+      state: area.mode === "calculated" ? "CALCULATED" : area.power_entity ? "MEASURED" : "NO METER",
       status: power === null ? "unknown" : "active",
-      custom: `${area.energy_entity ? `<div class="mini-line"><span>ENERGIE</span><strong>${this._formatEnergyKWh(this._energyKWh(area.energy_entity))}</strong></div>` : ""}${childLines}${residual !== null && children.length ? `<div class="mini-line residual"><span>NICHT ZUGEORDNET</span><strong>${this._formatPowerW(residual)}</strong></div>` : ""}`,
-      metaLeft: `${children.length} SUB AREAS`,
-      metaRight: area.power_entity ? "METER" : "UNMETERED",
+      custom: `<div class="mini-line"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div><div class="mini-line"><span>LOGIK</span><strong title="${this._esc(this._areaFormula(area))}">${this._esc(this._areaFormula(area))}</strong></div>`,
+      metaLeft: level?.name || "NO LEVEL",
+      metaRight: area.mode === "calculated" ? "CALC" : "METER",
     });
   }
 
@@ -425,7 +618,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (module.return_entity) details.push(["RL", this._formatTemp(this._temperature(module.return_entity))]);
     if (module.temperature_entity) details.push(["TEMP", this._formatTemp(this._temperature(module.temperature_entity))]);
     if (module.power_entity) details.push(["POWER", this._formatPowerW(this._powerW(module.power_entity))]);
-    if (module.energy_entity) details.push(["ENERGY", this._formatEnergyKWh(this._energyKWh(module.energy_entity))]);
+    if (module.energy_entity) details.push(["HEUTE", this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity))]);
 
     return this._node({
       code: typeCodes[module.type] || "HEAT",
@@ -454,33 +647,38 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _renderAreas() {
-    const roots = this._rootAreas();
+    const levels = [...this._sortedLevels()].reverse();
     return `
-      <div class="system-note">ZÄHLERHIERARCHIE · LEISTUNG UND ZUGEORDNETE ENERGIEZÄHLER</div>
-      <div class="area-tree">${roots.length ? roots.map((area) => this._renderAreaTree(area, 0)).join("") : this._empty("Keine Bereiche konfiguriert.")}</div>`;
+      <div class="system-note">GEBÄUDEPLAN · POSITIONEN ENTSPRECHEN DER KONFIGURIERTEN ANORDNUNG · M = GEMESSEN · C = BERECHNET</div>
+      <div class="building-stack">${levels.length ? levels.map((level) => this._renderLevelPlan(level, this._config, false)).join("") : this._empty("Keine Ebenen konfiguriert.")}</div>`;
   }
 
-  _renderAreaTree(area, depth) {
-    const children = this._areaChildren(area.id);
-    const power = this._powerW(area.power_entity);
-    const residual = this._areaResidual(area);
+  _renderLevelPlan(level, config = this._config, interactive = false) {
+    const areas = (config?.areas || []).filter((area) => area.level_id === level.id);
+    const rows = interactive ? 12 : this._levelRows(level, config);
     return `
-      <div class="tree-row" style="--depth:${depth}">
-        <span class="tree-branch">${depth ? "├─" : "■"}</span>
-        <span class="tree-name">${this._esc(area.name)}</span>
-        <span class="tree-source">${area.power_entity ? this._esc(area.power_entity) : "NO METER"}</span>
-        <strong>${this._formatPowerW(power)}</strong>
-        <strong class="tree-energy">${this._formatEnergyKWh(this._energyKWh(area.energy_entity))}</strong>
-      </div>
-      ${children.map((child) => this._renderAreaTree(child, depth + 1)).join("")}
-      ${children.length && residual !== null ? `
-        <div class="tree-row residual-row" style="--depth:${depth + 1}">
-          <span class="tree-branch">└─</span>
-          <span class="tree-name">Nicht zugeordnet</span>
-          <span class="tree-source">CALCULATED: PARENT − DIRECT CHILDREN</span>
-          <strong>${this._formatPowerW(residual)}</strong>
-          <strong class="tree-energy">—</strong>
-        </div>` : ""}`;
+      <section class="building-level ${interactive ? "editing" : ""}">
+        <div class="level-head"><span>LEVEL ${String(Number(level.order || 0) + 1).padStart(2, "0")}</span><strong>${this._esc(level.name)}</strong><em>${areas.length} BEREICHE</em></div>
+        <div class="level-grid ${interactive ? "layout-grid" : "readonly"}" data-layout-grid ${interactive ? `data-level-id="${this._esc(level.id)}"` : ""} style="--rows:${rows}">
+          ${areas.map((area) => this._renderAreaTile(area, config, interactive)).join("")}
+          ${!areas.length ? `<div class="layout-empty">KEINE BEREICHE AUF DIESER EBENE</div>` : ""}
+        </div>
+      </section>`;
+  }
+
+  _renderAreaTile(area, config = this._config, interactive = false) {
+    const power = this._areaPower(area, config);
+    const today = this._areaTodayEnergy(area, config);
+    const layout = area.layout || { x: 1, y: 1, w: 3, h: 2 };
+    const selected = interactive && area.id === this._selectedAreaId;
+    const tag = interactive ? "button" : "article";
+    const attrs = interactive ? `type="button" draggable="true" data-drag-area="${this._esc(area.id)}" data-action="select-area" data-area-id="${this._esc(area.id)}"` : "";
+    return `<${tag} class="area-tile ${area.mode === "calculated" ? "calculated" : "measured"} ${selected ? "selected" : ""}" ${attrs} style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}">
+      <div class="area-tile-head"><span>${area.mode === "calculated" ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
+      <div class="area-tile-power">${this._formatPowerW(power)}</div>
+      <div class="area-tile-energy"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>
+      <div class="area-tile-formula">${this._esc(this._areaFormula(area, config))}</div>
+    </${tag}>`;
   }
 
   _renderConfig() {
@@ -590,24 +788,65 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _configAreasSection(d) {
-    const areas = d.areas || [];
+    this._syncLayoutState(d);
+    const levels = this._sortedLevels(d);
+    const level = this._levelById(this._layoutLevelId, d) || levels[0];
+    const area = this._areaById(this._selectedAreaId, d) || (d.areas || []).find((item) => item.level_id === level?.id) || d.areas?.[0];
+    if (area) this._selectedAreaId = area.id;
     return `
-      <section class="config-card wide">
-        <div class="config-head"><span>06 / METER TREE</span><strong>HAUSBEREICHE UND ZÄHLERHIERARCHIE</strong><button data-action="add-area">+ ADD AREA</button></div>
-        <div class="area-editor-head"><span>BEREICH</span><span>PARENT</span><span>LEISTUNGS-ENTITY</span><span>ENERGIE-ENTITY</span><span></span></div>
-        ${areas.map((area, index) => `
-          <div class="area-editor-row">
-            <input data-array="areas" data-index="${index}" data-field="name" value="${this._esc(area.name || "")}">
-            <select data-array="areas" data-index="${index}" data-field="parent_id">
-              <option value="" ${!area.parent_id ? "selected" : ""}>— ROOT —</option>
-              ${areas.filter((candidate) => candidate.id !== area.id).map((candidate) => `<option value="${this._esc(candidate.id)}" ${area.parent_id === candidate.id ? "selected" : ""}>${this._esc(candidate.name)}</option>`).join("")}
-            </select>
-            <select data-array="areas" data-index="${index}" data-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>
-            <select data-array="areas" data-index="${index}" data-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>
-            <button class="danger" data-action="remove-area" data-index="${index}" ${areas.length <= 1 ? "disabled" : ""}>REMOVE</button>
-          </div>`).join("")}
-        <div class="hint">Restlast = Bereichsleistung − Summe der direkten Unterzähler. Energie wird pro Bereich aus der zugeordneten Wh/kWh-Entity angezeigt und nicht aus dem Live-Wattwert im Browser hochgezählt.</div>
+      <section class="config-card wide layout-config-card">
+        <div class="config-head"><span>06 / BUILDING LAYOUT</span><strong>GEBÄUDEPLAN UND BEREICHSBERECHNUNG</strong><button data-action="add-area">+ BEREICH</button></div>
+        <div class="level-toolbar">
+          <div class="level-tabs">
+            ${levels.map((item) => `<button class="level-tab ${item.id === level?.id ? "active" : ""}" data-action="set-layout-level" data-level-id="${this._esc(item.id)}">${this._esc(item.name)}</button>`).join("")}
+            <button class="level-tab add" data-action="add-level">+ EBENE</button>
+          </div>
+          ${level ? `<div class="level-tools">
+            <input data-level-id="${this._esc(level.id)}" data-level-field="name" value="${this._esc(level.name)}" aria-label="Ebenenname">
+            <button data-action="move-level" data-level-id="${this._esc(level.id)}" data-direction="-1">←</button>
+            <button data-action="move-level" data-level-id="${this._esc(level.id)}" data-direction="1">→</button>
+            <button class="danger" data-action="remove-level" data-level-id="${this._esc(level.id)}" ${levels.length <= 1 ? "disabled" : ""}>REMOVE</button>
+          </div>` : ""}
+        </div>
+        <div class="layout-editor">
+          <div class="layout-stage">
+            <div class="layout-help">BEREICHE ZIEHEN · RASTER 12 × 12 · POSITION UND GRÖSSE WERDEN GESPEICHERT</div>
+            ${level ? this._renderLevelPlan(level, d, true) : this._empty("Keine Ebene vorhanden.")}
+          </div>
+          <aside class="layout-inspector">
+            ${area ? this._renderAreaInspector(area, d) : `<div class="config-empty">BEREICH AUSWÄHLEN</div>`}
+          </aside>
+        </div>
+        <div class="hint">Die Position im Raster ist rein optisch. Messung und Berechnung werden separat definiert. Energie wird aus dem Gesamtzähler über die Home-Assistant-Recorder-Statistik seit lokalem Tagesbeginn als HEUTE ermittelt.</div>
       </section>`;
+  }
+
+  _renderAreaInspector(area, d) {
+    const layout = area.layout || { x: 1, y: 1, w: 3, h: 2 };
+    const levelOptions = this._sortedLevels(d).map((level) => `<option value="${this._esc(level.id)}" ${level.id === area.level_id ? "selected" : ""}>${this._esc(level.name)}</option>`).join("");
+    let calculation = "";
+    if (area.mode === "calculated") {
+      const type = area.calculation_type || "difference";
+      calculation += this._field("Berechnungsart", `<select data-area-id="${this._esc(area.id)}" data-area-field="calculation_type"><option value="difference" ${type === "difference" ? "selected" : ""}>Differenz</option><option value="sum" ${type === "sum" ? "selected" : ""}>Summe</option><option value="custom" ${type === "custom" ? "selected" : ""}>Benutzerdefiniert</option></select>`);
+      if (type === "difference") {
+        calculation += this._field("Basisbereich", `<select data-area-id="${this._esc(area.id)}" data-area-field="basis_area_id">${this._areaOptionsForCalculation(area.id, area.basis_area_id, d)}</select>`);
+        calculation += `<div class="inspector-section"><div class="inspector-label">BEREICHE ABZIEHEN</div>${(area.source_area_ids || []).map((id, index) => `<div class="calc-row"><select data-area-id="${this._esc(area.id)}" data-area-source-index="${index}">${this._areaOptionsForCalculation(area.id, id, d)}</select><button class="danger" data-action="remove-source" data-area-id="${this._esc(area.id)}" data-index="${index}">×</button></div>`).join("")}<button class="small-action" data-action="add-source" data-area-id="${this._esc(area.id)}">+ BEREICH</button></div>`;
+      } else if (type === "sum") {
+        calculation += `<div class="inspector-section"><div class="inspector-label">BEREICHE ADDIEREN</div>${(area.source_area_ids || []).map((id, index) => `<div class="calc-row"><select data-area-id="${this._esc(area.id)}" data-area-source-index="${index}">${this._areaOptionsForCalculation(area.id, id, d)}</select><button class="danger" data-action="remove-source" data-area-id="${this._esc(area.id)}" data-index="${index}">×</button></div>`).join("")}<button class="small-action" data-action="add-source" data-area-id="${this._esc(area.id)}">+ BEREICH</button></div>`;
+      } else {
+        calculation += `<div class="inspector-section"><div class="inspector-label">BERECHNUNGSZEILEN</div>${(area.terms || []).map((term, index) => `<div class="calc-row custom"><select data-area-id="${this._esc(area.id)}" data-term-index="${index}" data-term-field="op"><option value="+" ${term.op !== "-" ? "selected" : ""}>+</option><option value="-" ${term.op === "-" ? "selected" : ""}>−</option></select><select data-area-id="${this._esc(area.id)}" data-term-index="${index}" data-term-field="area_id">${this._areaOptionsForCalculation(area.id, term.area_id, d)}</select><button class="danger" data-action="remove-term" data-area-id="${this._esc(area.id)}" data-index="${index}">×</button></div>`).join("")}<button class="small-action" data-action="add-term" data-area-id="${this._esc(area.id)}">+ ZEILE</button></div>`;
+      }
+      calculation += `<div class="calc-preview"><span>LIVE-VORSCHAU</span><strong>${this._formatPowerW(this._areaPower(area, d))}</strong><em>${this._esc(this._areaFormula(area, d))}</em><small>HEUTE ${this._formatEnergyKWh(this._areaTodayEnergy(area, d))}</small></div>`;
+    }
+    return `
+      <div class="inspector-head"><span>${area.mode === "calculated" ? "C / CALCULATED" : "M / MEASURED"}</span><button class="danger" data-action="remove-area" data-area-id="${this._esc(area.id)}" ${(d.areas || []).length <= 1 ? "disabled" : ""}>REMOVE</button></div>
+      ${this._field("Bereichsname", `<input data-area-id="${this._esc(area.id)}" data-area-field="name" value="${this._esc(area.name)}">`)}
+      ${this._field("Ebene", `<select data-area-id="${this._esc(area.id)}" data-area-field="level_id">${levelOptions}</select>`)}
+      ${this._field("Datentyp", `<select data-area-id="${this._esc(area.id)}" data-area-field="mode"><option value="measured" ${area.mode !== "calculated" ? "selected" : ""}>Gemessen</option><option value="calculated" ${area.mode === "calculated" ? "selected" : ""}>Berechnet</option></select>`)}
+      ${area.mode !== "calculated" ? `${this._field("Aktuelle Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>`)}${this._field("Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>`)}` : calculation}
+      <div class="inspector-section"><div class="inspector-label">POSITION IM GEBÄUDEPLAN</div><div class="layout-position">
+        ${["x", "y", "w", "h"].map((key) => `<label><span>${key.toUpperCase()}</span><select data-area-id="${this._esc(area.id)}" data-layout-field="${key}">${Array.from({ length: key === "w" ? 6 : key === "h" ? 4 : 12 }, (_, index) => index + 1).map((value) => `<option value="${value}" ${Number(layout[key] || 1) === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>`).join("")}
+      </div></div>`;
   }
 
   _field(label, control) {
@@ -625,7 +864,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
     if (action === "set-tab") {
       this._tab = button.dataset.tab;
-      if (this._tab === "config") this._draft = this._clone(this._config);
+      if (this._tab === "config") {
+        this._draft = this._clone(this._config);
+        this._syncLayoutState(this._draft);
+      }
       this._render();
       return;
     }
@@ -648,7 +890,75 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
     if (action === "add-area") {
-      this._draft.areas.push({ id: this._id("area"), name: "Neuer Bereich", parent_id: this._draft.areas[0]?.id || null, power_entity: "", energy_entity: "" });
+      const levelId = this._layoutLevelId || this._draft.levels?.[0]?.id;
+      const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], layout: { x: 1, y: 1, w: 3, h: 2 } };
+      this._draft.areas.push(area);
+      this._selectedAreaId = area.id;
+      this._render();
+      return;
+    }
+    if (action === "add-level") {
+      const level = { id: this._id("level"), name: "Neue Ebene", order: this._draft.levels.length };
+      this._draft.levels.push(level);
+      this._layoutLevelId = level.id;
+      this._selectedAreaId = null;
+      this._render();
+      return;
+    }
+    if (action === "set-layout-level") {
+      this._layoutLevelId = button.dataset.levelId;
+      this._selectedAreaId = this._draft.areas.find((area) => area.level_id === this._layoutLevelId)?.id || null;
+      this._render();
+      return;
+    }
+    if (action === "select-area") {
+      this._selectedAreaId = button.dataset.areaId;
+      this._render();
+      return;
+    }
+    if (action === "move-level") {
+      const levels = this._sortedLevels(this._draft);
+      const index = levels.findIndex((level) => level.id === button.dataset.levelId);
+      const next = index + Number(button.dataset.direction || 0);
+      if (index >= 0 && next >= 0 && next < levels.length) {
+        [levels[index].order, levels[next].order] = [levels[next].order, levels[index].order];
+        this._draft.levels = levels.sort((a, b) => Number(a.order) - Number(b.order));
+      }
+      this._render();
+      return;
+    }
+    if (action === "remove-level") {
+      if (this._draft.levels.length <= 1) return;
+      const levelId = button.dataset.levelId;
+      const fallback = this._draft.levels.find((level) => level.id !== levelId);
+      this._draft.areas.forEach((area) => { if (area.level_id === levelId) area.level_id = fallback.id; });
+      this._draft.levels = this._draft.levels.filter((level) => level.id !== levelId);
+      this._layoutLevelId = fallback.id;
+      this._syncLayoutState(this._draft);
+      this._render();
+      return;
+    }
+    if (action === "add-source") {
+      const area = this._areaById(button.dataset.areaId, this._draft);
+      if (area) area.source_area_ids.push("");
+      this._render();
+      return;
+    }
+    if (action === "remove-source") {
+      const area = this._areaById(button.dataset.areaId, this._draft);
+      if (area) area.source_area_ids.splice(Number(button.dataset.index), 1);
+      this._render();
+      return;
+    }
+    if (action === "add-term") {
+      const area = this._areaById(button.dataset.areaId, this._draft);
+      if (area) area.terms.push({ op: "+", area_id: "" });
+      this._render();
+      return;
+    }
+    if (action === "remove-term") {
+      const area = this._areaById(button.dataset.areaId, this._draft);
+      if (area) area.terms.splice(Number(button.dataset.index), 1);
       this._render();
       return;
     }
@@ -660,13 +970,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
     if (action === "remove-area") {
-      const index = Number(button.dataset.index);
-      const area = this._draft.areas[index];
+      const areaId = button.dataset.areaId;
+      const area = this._areaById(areaId, this._draft);
       if (!area || this._draft.areas.length <= 1) return;
-      this._draft.areas.forEach((candidate) => {
-        if (candidate.parent_id === area.id) candidate.parent_id = area.parent_id || null;
-      });
-      this._draft.areas.splice(index, 1);
+      for (const candidate of this._draft.areas) {
+        if (candidate.basis_area_id === areaId) candidate.basis_area_id = "";
+        candidate.source_area_ids = (candidate.source_area_ids || []).filter((id) => id !== areaId);
+        candidate.terms = (candidate.terms || []).filter((term) => term.area_id !== areaId);
+      }
+      this._draft.areas = this._draft.areas.filter((candidate) => candidate.id !== areaId);
+      this._selectedAreaId = this._draft.areas.find((candidate) => candidate.level_id === this._layoutLevelId)?.id || this._draft.areas[0]?.id || null;
       this._render();
       return;
     }
@@ -697,8 +1010,77 @@ class EnergySystemDashboardPanel extends HTMLElement {
       const index = Number(target.dataset.index);
       const field = target.dataset.field;
       if (!Array.isArray(this._draft[group]) || !this._draft[group][index]) return;
-      this._draft[group][index][field] = target.type === "checkbox" ? target.checked : target.value || (field === "parent_id" ? null : "");
+      this._draft[group][index][field] = target.type === "checkbox" ? target.checked : target.value;
+      return;
     }
+
+    if (target.dataset.levelId && target.dataset.levelField) {
+      const level = this._levelById(target.dataset.levelId, this._draft);
+      if (level) level[target.dataset.levelField] = target.value;
+      this._render();
+      return;
+    }
+
+    if (target.dataset.areaId) {
+      const area = this._areaById(target.dataset.areaId, this._draft);
+      if (!area) return;
+      if (target.dataset.layoutField) {
+        area.layout[target.dataset.layoutField] = Number(target.value);
+        const width = Number(area.layout.w || 1);
+        const height = Number(area.layout.h || 1);
+        area.layout.x = Math.min(Number(area.layout.x || 1), 13 - width);
+        area.layout.y = Math.min(Number(area.layout.y || 1), 13 - height);
+        this._render();
+        return;
+      }
+      if (target.dataset.areaSourceIndex !== undefined) {
+        area.source_area_ids[Number(target.dataset.areaSourceIndex)] = target.value;
+        this._render();
+        return;
+      }
+      if (target.dataset.termIndex !== undefined) {
+        const term = area.terms[Number(target.dataset.termIndex)];
+        if (term) term[target.dataset.termField] = target.value;
+        this._render();
+        return;
+      }
+      if (target.dataset.areaField) {
+        area[target.dataset.areaField] = target.value;
+        if (target.dataset.areaField === "level_id") this._layoutLevelId = target.value;
+        if (["mode", "calculation_type", "level_id", "name", "basis_area_id"].includes(target.dataset.areaField)) this._render();
+      }
+    }
+  }
+
+  _onDragStart(event) {
+    const tile = event.target.closest("[data-drag-area]");
+    if (!tile) return;
+    this._dragAreaId = tile.dataset.dragArea;
+    event.dataTransfer?.setData("text/plain", this._dragAreaId);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+
+  _onDragOver(event) {
+    if (event.target.closest("[data-layout-grid]")) event.preventDefault();
+  }
+
+  _onDrop(event) {
+    const grid = event.target.closest("[data-layout-grid]");
+    if (!grid || !this._draft) return;
+    event.preventDefault();
+    const areaId = event.dataTransfer?.getData("text/plain") || this._dragAreaId;
+    const area = this._areaById(areaId, this._draft);
+    if (!area) return;
+    const rect = grid.getBoundingClientRect();
+    const column = Math.max(1, Math.min(12, Math.floor(((event.clientX - rect.left) / rect.width) * 12) + 1));
+    const row = Math.max(1, Math.min(12, Math.floor(((event.clientY - rect.top) / rect.height) * 12) + 1));
+    area.level_id = grid.dataset.levelId;
+    area.layout.x = Math.min(column, 13 - Number(area.layout.w || 1));
+    area.layout.y = Math.min(row, 13 - Number(area.layout.h || 1));
+    this._layoutLevelId = area.level_id;
+    this._selectedAreaId = area.id;
+    this._dragAreaId = null;
+    this._render();
   }
 
   async _saveConfig() {
@@ -712,7 +1094,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
       });
       this._config = result.config;
       this._draft = this._clone(result.config);
-      this._tab = "electric";
+      this._syncLayoutState(this._draft);
+      this._tab = "areas";
+      await this._refreshDailyEnergy();
       this._render();
     } catch (error) {
       this._saving = false;
@@ -862,6 +1246,56 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .loading, .error-box { min-height:60vh; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--text); font:750 17px/1.5 ui-monospace, monospace; letter-spacing:.12em; text-align:center; }
         .loading span { color:var(--muted); font-size:11px; margin-top:8px; }
         .error-box { color:var(--fault); }
+
+        .building-stack { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+        .building-level { border:1px solid var(--line); background:var(--panel); min-width:0; }
+        .level-head { min-height:42px; display:grid; grid-template-columns:90px 1fr auto; gap:12px; align-items:center; padding:0 14px; border-bottom:1px solid var(--line); }
+        .level-head span, .level-head em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
+        .level-head strong { font-size:12px; letter-spacing:.06em; }
+        .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); gap:6px; padding:12px; min-height:260px; background-image:linear-gradient(to right,rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.035) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 48px; overflow:hidden; }
+        .level-grid.layout-grid { grid-template-rows:repeat(12,48px); min-height:594px; background-size:calc(100% / 12) 100%,100% 54px; }
+        .area-tile { appearance:none; border:1px solid var(--line-strong); background:#15191d; color:var(--text); min-width:0; padding:10px 12px; display:flex; flex-direction:column; text-align:left; overflow:hidden; position:relative; z-index:1; }
+        button.area-tile { cursor:grab; font:inherit; }
+        button.area-tile:active { cursor:grabbing; }
+        .area-tile.calculated { border-style:dashed; }
+        .area-tile.selected { outline:2px solid var(--active); outline-offset:1px; }
+        .area-tile-head { display:grid; grid-template-columns:22px 1fr; gap:8px; align-items:center; min-width:0; }
+        .area-tile-head span { color:var(--active); font:800 10px/1 ui-monospace, monospace; }
+        .area-tile.calculated .area-tile-head span { color:var(--thermal); }
+        .area-tile-head strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; letter-spacing:.04em; }
+        .area-tile-power { margin-top:auto; padding-top:8px; font:650 22px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:-.04em; }
+        .area-tile-energy { display:flex; justify-content:space-between; gap:8px; margin-top:8px; padding-top:7px; border-top:1px dotted var(--line); font:650 9px/1 ui-monospace, monospace; }
+        .area-tile-energy span { color:var(--muted); }
+        .area-tile-formula { color:var(--muted); margin-top:7px; font:600 8px/1.25 ui-monospace, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .layout-empty { grid-column:1 / -1; grid-row:1 / span 2; display:flex; align-items:center; justify-content:center; color:var(--muted); font:650 10px/1 ui-monospace, monospace; letter-spacing:.08em; }
+        .layout-config-card { overflow:hidden; }
+        .level-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
+        .level-tabs { display:flex; gap:6px; flex-wrap:wrap; }
+        .level-tab, .level-tools button, .small-action { appearance:none; border:1px solid var(--line); background:#101316; color:var(--muted); min-height:32px; padding:0 11px; font:700 9px/1 ui-monospace, monospace; letter-spacing:.06em; }
+        .level-tab.active { color:var(--text); border-color:var(--line-strong); background:rgba(255,255,255,.05); }
+        .level-tab.add, .small-action { color:var(--active); }
+        .level-tools { display:flex; gap:6px; align-items:center; }
+        .level-tools input { width:150px; min-height:32px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:11px; }
+        .layout-editor { display:grid; grid-template-columns:minmax(0,2fr) minmax(330px,1fr); min-height:680px; }
+        .layout-stage { min-width:0; padding:12px; border-right:1px solid var(--line); }
+        .layout-help { color:var(--muted); margin:0 0 10px; font:650 9px/1.4 ui-monospace, monospace; letter-spacing:.08em; }
+        .layout-inspector { min-width:0; background:rgba(10,12,14,.45); }
+        .inspector-head { min-height:44px; display:flex; justify-content:space-between; align-items:center; gap:12px; padding:6px 12px; border-bottom:1px solid var(--line); }
+        .inspector-head span, .inspector-label { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; }
+        .inspector-section { padding:12px 14px; border-bottom:1px solid var(--line); }
+        .inspector-label { margin-bottom:10px; }
+        .calc-row { display:grid; grid-template-columns:1fr 34px; gap:6px; margin-bottom:6px; }
+        .calc-row.custom { grid-template-columns:56px 1fr 34px; }
+        .calc-row select { min-width:0; min-height:36px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:10px; }
+        .small-action { width:100%; margin-top:4px; }
+        .calc-preview { display:grid; grid-template-columns:1fr auto; gap:8px 12px; padding:14px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); background:rgba(255,255,255,.018); }
+        .calc-preview span { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; }
+        .calc-preview strong { font:700 18px/1 ui-monospace, monospace; }
+        .calc-preview em, .calc-preview small { grid-column:1 / -1; color:var(--muted); font:600 9px/1.4 ui-monospace, monospace; font-style:normal; overflow-wrap:anywhere; }
+        .layout-position { display:grid; grid-template-columns:repeat(4,1fr); gap:7px; }
+        .layout-position label { display:flex; flex-direction:column; gap:6px; }
+        .layout-position label span { color:var(--muted); font:700 9px/1 ui-monospace, monospace; }
+        .layout-position select { min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 6px; }
         @media (max-width: 900px) {
           .shell { padding:18px 14px 40px; }
           .topbar { align-items:flex-start; }
@@ -875,6 +1309,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
           .tree-source { display:none; }
           .buffer-row { grid-template-columns:34px 1fr 80px; }
           .buffer-row small { display:none; }
+          .level-toolbar { align-items:stretch; flex-direction:column; }
+          .level-tools { flex-wrap:wrap; }
+          .layout-editor { grid-template-columns:1fr; }
+          .layout-stage { border-right:0; border-bottom:1px solid var(--line); }
+          .level-grid.layout-grid { grid-template-rows:repeat(12,38px); min-height:474px; }
         }
       </style>`;
   }
