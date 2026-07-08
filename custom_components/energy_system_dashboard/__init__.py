@@ -33,7 +33,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 3,
+    "version": 4,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -66,7 +66,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "basis_area_id": "",
             "source_area_ids": [],
             "terms": [],
-            "layout": {"x": 5, "y": 2, "w": 4, "h": 2},
+            "layout": {"x": 1, "y": 1, "w": 12, "h": 2},
         }
     ],
 }
@@ -109,7 +109,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.2.0",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.2.1",
                 }
             },
             require_admin=False,
@@ -172,7 +172,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 3
+    normalized["version"] = 4
 
     for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -292,10 +292,11 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         used_ids.add(area_id)
 
         raw_layout = area.get("layout") if isinstance(area.get("layout"), dict) else {}
-        width = _safe_int(raw_layout.get("w"), 3, 1, 6)
-        height = _safe_int(raw_layout.get("h"), 2, 1, 4)
-        x = _safe_int(raw_layout.get("x"), 1 + ((index * 3) % 10), 1, 12)
-        y = _safe_int(raw_layout.get("y"), 1 + ((index // 4) * 2), 1, 12)
+        is_house = area_id == "house"
+        width = 12 if is_house else _safe_int(raw_layout.get("w"), 3, 1, 6)
+        height = 2 if is_house else _safe_int(raw_layout.get("h"), 2, 1, 4)
+        x = 1 if is_house else _safe_int(raw_layout.get("x"), 1 + ((index * 3) % 10), 1, 12)
+        y = 1 if is_house else _safe_int(raw_layout.get("y"), 1 + ((index // 4) * 2), 1, 12)
         x = min(x, 13 - width)
         y = min(y, 13 - height)
 
@@ -335,6 +336,14 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "layout": {"x": x, "y": y, "w": width, "h": height},
             }
         )
+
+    if not any(area["id"] == "house" for area in areas):
+        house = dict(DEFAULT_CONFIG["areas"][0])
+        house["level_id"] = default_level_id
+        areas.insert(0, house)
+    else:
+        house = next(area for area in areas if area["id"] == "house")
+        house["layout"] = {"x": 1, "y": 1, "w": 12, "h": 2}
 
     valid_ids = {area["id"] for area in areas}
     for area in areas:
