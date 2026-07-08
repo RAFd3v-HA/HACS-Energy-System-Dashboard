@@ -33,7 +33,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 5,
+    "version": 6,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -67,6 +67,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "source_area_ids": [],
             "terms": [],
             "layout": {"x": 1, "y": 1, "w": 12, "h": 2},
+            "layout_mode": "docked",
+            "dock_order": 0,
         }
     ],
 }
@@ -109,7 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.2.2",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.0",
                 }
             },
             require_admin=False,
@@ -172,7 +174,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 5
+    normalized["version"] = 6
 
     for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -296,9 +298,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         width = 12 if is_house else _safe_int(raw_layout.get("w"), 3, 1, 6)
         height = 2 if is_house else _safe_int(raw_layout.get("h"), 2, 1, 4)
         x = 1 if is_house else _safe_int(raw_layout.get("x"), 1 + ((index * 3) % 10), 1, 12)
-        y = 1 if is_house else _safe_int(raw_layout.get("y"), 1 + ((index // 4) * 2), 1, 12)
+        y = 1 if is_house else _safe_int(raw_layout.get("y"), 1 + ((index // 4) * 2), 1, 100)
         x = min(x, 13 - width)
-        y = min(y, 13 - height)
 
         mode = str(area.get("mode") or "measured")
         if mode not in {"measured", "calculated"}:
@@ -313,6 +314,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         terms = area.get("terms")
         if not isinstance(terms, list):
             terms = []
+
+        layout_mode = str(area.get("layout_mode") or "docked")
+        if layout_mode not in {"docked", "free"}:
+            layout_mode = "docked"
 
         areas.append(
             {
@@ -334,6 +339,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                     if isinstance(term, dict)
                 ],
                 "layout": {"x": x, "y": y, "w": width, "h": height},
+                "layout_mode": "docked" if is_house else layout_mode,
+                "dock_order": _safe_int(area.get("dock_order"), y * 100 + x, 0, 10000),
             }
         )
 
@@ -344,6 +351,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     else:
         house = next(area for area in areas if area["id"] == "house")
         house["layout"] = {"x": 1, "y": 1, "w": 12, "h": 2}
+        house["layout_mode"] = "docked"
+        house["dock_order"] = 0
 
     valid_ids = {area["id"] for area in areas}
     for area in areas:
@@ -361,6 +370,26 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             for term in area["terms"]
             if term["area_id"] in valid_ids and term["area_id"] != area["id"]
         ]
+
+    # Keep docked areas in a stable per-floor order. Existing 0.2.x layouts
+    # migrate to the visual top/left order they previously used.
+    for level in levels:
+        docked = [
+            area for area in areas
+            if area["id"] != "house"
+            and area["level_id"] == level["id"]
+            and area["layout_mode"] == "docked"
+        ]
+        docked.sort(
+            key=lambda item: (
+                item.get("dock_order", 10000),
+                item["layout"]["y"],
+                item["layout"]["x"],
+                item["name"],
+            )
+        )
+        for dock_order, area in enumerate(docked):
+            area["dock_order"] = dock_order
 
     by_id = {area["id"]: area for area in areas}
 
