@@ -1,57 +1,55 @@
-# Energy System Dashboard 0.2.1
+# Energy System Dashboard 0.2.2
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## Neu in 0.2.1
+## Neu in 0.2.2
 
-### Einheitliches technisches Raster
+### Stockwerk direkt am Bereich auswählen
 
-- Elektrisch, Thermisch, Bereiche und Gebäude-Editor verwenden dieselbe 12-Spalten-Layoutsprache.
-- Im elektrischen Reiter wird der konfigurierte Gebäudeplan des ausgewählten Stockwerks direkt wiederverwendet.
-- Der thermische Reiter verwendet ebenfalls ein geschlossenes Raster statt frei auseinanderlaufender Kartenreihen.
+Die separate Stockwerksverwaltung im Gebäude-Editor wurde aus der sichtbaren Oberfläche entfernt.
 
-### Haus als fester Root-Bereich
+Jeder Bereich besitzt jetzt direkt im rechten Inspektor das Feld **Stockwerk**. Vorhandene Ebenen und technische Standard-Stockwerke werden im selben Auswahlfeld angeboten:
 
-- Der Bereich mit der ID `house` wird als Gesamtbereich behandelt.
-- `Haus` steht im Gebäude-Editor immer ganz oben über die komplette Breite.
-- Die Haus-Kachel ist nicht verschiebbar und besitzt keine Stockwerksposition.
-- Haus wird nicht zusätzlich in die Endbereichssumme der elektrischen Verteilung aufgenommen, solange andere Endbereiche existieren.
+- 3. UG
+- 2. UG
+- UG
+- EG
+- OG
+- 2. OG
+- 3. OG
+- DG
 
-### Stockwerksauswahl
+Wird ein Standard-Stockwerk ausgewählt, das bisher noch nicht existiert, legt das Dashboard die Ebene automatisch an. Eine separate Aktion `+ STOCKWERK` ist nicht mehr erforderlich.
 
-- Frei benennbare Stockwerke/Ebenen bleiben erhalten.
-- Im Gebäude-Editor werden Stockwerke per Tab ausgewählt.
-- Auch die Reiter **Elektrisch** und **Bereiche** besitzen eine Stockwerksauswahl.
-- Die Anzeige verwendet auf jedem Stockwerk exakt dieselben gespeicherten X/Y/W/H-Positionen.
+### Automatische Gruppierung im Konfigurator
 
-### Echtes Einrasten der Bereichskacheln
+Alle belegten Stockwerke werden im Gebäude-Editor gleichzeitig untereinander dargestellt. Eine Bereichskachel erscheint automatisch in der Gruppe des zugewiesenen Stockwerks.
 
-- Das 12 × 12 Raster hat keine künstlichen Zwischenräume mehr.
-- Drag-and-drop rastet exakt auf Rasterzellen ein.
-- Kacheln liegen direkt Kante an Kante.
-- Eine Kollisionsprüfung sucht beim Ablegen die nächste freie Rasterposition, statt eine andere Kachel zu überdecken.
-- Neue Bereiche werden automatisch auf der nächsten freien Position des ausgewählten Stockwerks angelegt.
+Beim Wechsel des Stockwerks:
 
-### Gemessene und berechnete Bereiche
+1. wird die Kachel aus der bisherigen Stockwerksgruppe entfernt,
+2. dem neuen Stockwerk zugeordnet,
+3. auf die nächste freie Rasterposition dieses Stockwerks eingerastet.
 
-Jeder Bereich ist entweder:
+Die optische Gruppierung ist sofort sichtbar, noch bevor die Gesamtkonfiguration gespeichert wird.
 
-- **M / Gemessen**: direkte Home-Assistant-Entity für aktuelle Leistung und Energiezähler.
-- **C / Berechnet**: Wert wird aus anderen Bereichen gebildet.
+### Vertikaler Stockwerksindikator
 
-Berechnungsarten:
+Links neben jeder Stockwerksgruppe befindet sich ein fester vertikaler Indikator mit der Stockwerksbezeichnung, zum Beispiel `DG`, `OG`, `EG` oder `UG`.
 
-- **Differenz**: Basisbereich minus ausgewählte Bereiche.
-- **Summe**: ausgewählte Bereiche addieren.
-- **Benutzerdefiniert**: kombinierbare `+` / `−` Zeilen.
+Die Bereiche liegen rechts davon im jeweiligen 12-Spalten-Raster. Dadurch entspricht die vertikale Gruppierung im Editor der Lage im Gebäude: obere Stockwerke werden oberhalb von EG und Untergeschossen dargestellt.
 
-### Leistung der elektrischen Verteilung
+### Haus bleibt fester Root-Bereich
 
-Die elektrische Verteilung summiert weiterhin die Endbereiche der messtechnischen Zerlegung. Der feste Root-Bereich `Haus` wird dabei nicht zusätzlich addiert.
+`Haus` steht weiterhin ganz oben über die komplette Breite. Die Haus-Kachel ist stockwerksübergreifend, nicht verschiebbar und wird nicht als zusätzliche Ebene behandelt.
 
-### Nur Energie HEUTE
+### Mess- und Berechnungslogik bleibt getrennt
 
-Die konfigurierte Energie-Entity darf ein Gesamtzähler sein. Das Dashboard verwendet Home Assistants Recorder-Statistik ab lokalem Tagesbeginn und zeigt die Änderung des heutigen Tages in kWh.
+Die Stockwerkszuordnung beeinflusst nur die räumliche Darstellung. Gemessene und berechnete Bereiche können weiterhin unabhängig davon über Differenz-, Summen- oder benutzerdefinierte Berechnungen verbunden werden.
+
+### Energie HEUTE
+
+Die konfigurierte Energie-Entity darf ein Gesamtzähler sein. Das Dashboard verwendet die Home-Assistant-Recorder-Statistik ab lokalem Tagesbeginn und zeigt die Änderung des heutigen Tages in kWh.
 
 ## Installation / Update
 
@@ -59,9 +57,10 @@ Die konfigurierte Energie-Entity darf ein Gesamtzähler sein. Das Dashboard verw
 2. `custom_components/energy_system_dashboard` aus diesem Paket nach `/config/custom_components/` kopieren.
 3. Home Assistant vollständig neu starten.
 4. **Energiesystem → Konfiguration** öffnen.
-5. Gebäudeplan prüfen und speichern.
+5. Einen Bereich auswählen und das gewünschte **Stockwerk** zuweisen.
+6. Gebäudeplan prüfen und speichern.
 
-Bestehende 0.2.0-Konfigurationen bleiben erhalten. Die `Haus`-Kachel wird bei der Migration automatisch auf die feste Root-Position über volle Breite gesetzt.
+Bestehende 0.2.x-Konfigurationen bleiben erhalten. Bereits vorhandene Ebenen werden weiterhin angeboten; leere Ebenen werden im Gebäude-Editor nicht als eigene Gruppe dargestellt.
 
 ## Datenquellen
 

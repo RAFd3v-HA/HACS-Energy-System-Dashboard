@@ -142,11 +142,13 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _syncLayoutState(config = this._draft || this._config) {
-    const levels = this._sortedLevels(config);
-    if (!levels.some((level) => level.id === this._layoutLevelId)) this._layoutLevelId = levels[0]?.id || null;
-    if (!levels.some((level) => level.id === this._viewLevelId)) this._viewLevelId = levels[0]?.id || null;
+    const levels = this._buildingLevels(config);
+    const allLevels = this._sortedLevels(config);
+    const fallbackLevelId = levels[0]?.id || allLevels[0]?.id || null;
+    if (!allLevels.some((level) => level.id === this._layoutLevelId)) this._layoutLevelId = fallbackLevelId;
+    if (!levels.some((level) => level.id === this._viewLevelId)) this._viewLevelId = fallbackLevelId;
     if (!(config?.areas || []).some((area) => area.id === this._selectedAreaId)) {
-      this._selectedAreaId = (config?.areas || []).find((area) => area.id !== "house" && area.level_id === this._layoutLevelId)?.id || this._houseArea(config)?.id || config?.areas?.[0]?.id || null;
+      this._selectedAreaId = (config?.areas || []).find((area) => area.id !== "house")?.id || this._houseArea(config)?.id || config?.areas?.[0]?.id || null;
     }
   }
 
@@ -315,12 +317,89 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return (config?.areas || []).find((area) => area.id === areaId) || null;
   }
 
+  _floorPresets() {
+    return [
+      { name: "3. UG", rank: -30 },
+      { name: "2. UG", rank: -20 },
+      { name: "UG", rank: -10 },
+      { name: "EG", rank: 0 },
+      { name: "OG", rank: 10 },
+      { name: "2. OG", rank: 20 },
+      { name: "3. OG", rank: 30 },
+      { name: "DG", rank: 40 },
+    ];
+  }
+
+  _floorRank(name) {
+    const normalized = String(name || "").trim().toUpperCase();
+    const aliases = {
+      "KG": -10,
+      "KELLER": -10,
+      "KELLERGESCHOSS": -10,
+      "ERDGESCHOSS": 0,
+      "1. OG": 10,
+      "1. OBERGESCHOSS": 10,
+      "OBERGESCHOSS": 10,
+      "DACHGESCHOSS": 40,
+    };
+    if (aliases[normalized] !== undefined) return aliases[normalized];
+    const preset = this._floorPresets().find((item) => item.name.toUpperCase() === normalized);
+    return preset ? preset.rank : null;
+  }
+
   _sortedLevels(config = this._config) {
-    return [...(config?.levels || [])].sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    return [...(config?.levels || [])].sort((a, b) => {
+      const rankA = this._floorRank(a.name);
+      const rankB = this._floorRank(b.name);
+      if (rankA !== null && rankB !== null && rankA !== rankB) return rankA - rankB;
+      if (rankA !== null && rankB === null) return -1;
+      if (rankA === null && rankB !== null) return 1;
+      return Number(a.order || 0) - Number(b.order || 0) || String(a.name || "").localeCompare(String(b.name || ""), "de");
+    });
+  }
+
+  _buildingLevels(config = this._config, includeEmpty = false) {
+    const areaLevelIds = new Set((config?.areas || []).filter((area) => area.id !== "house").map((area) => area.level_id));
+    const levels = this._sortedLevels(config).filter((level) => includeEmpty || areaLevelIds.has(level.id));
+    return levels.sort((a, b) => {
+      const rankA = this._floorRank(a.name);
+      const rankB = this._floorRank(b.name);
+      if (rankA !== null && rankB !== null && rankA !== rankB) return rankB - rankA;
+      if (rankA !== null && rankB === null) return -1;
+      if (rankA === null && rankB !== null) return 1;
+      return Number(a.order || 0) - Number(b.order || 0);
+    });
   }
 
   _levelById(levelId, config = this._config) {
     return (config?.levels || []).find((level) => level.id === levelId) || null;
+  }
+
+  _ensureFloor(name, config = this._draft) {
+    if (!config) return null;
+    const normalized = String(name || "").trim();
+    if (!normalized) return null;
+    const existing = (config.levels || []).find((level) => String(level.name || "").trim().toLowerCase() === normalized.toLowerCase());
+    if (existing) return existing;
+    const rank = this._floorRank(normalized);
+    const level = {
+      id: this._id("level"),
+      name: normalized,
+      order: rank === null ? (config.levels || []).length : rank,
+    };
+    config.levels = [...(config.levels || []), level];
+    return level;
+  }
+
+  _floorSelectOptions(area, config = this._draft || this._config) {
+    const existing = this._sortedLevels(config);
+    const existingNames = new Set(existing.map((level) => String(level.name || "").trim().toLowerCase()));
+    const existingOptions = existing.map((level) => `<option value="${this._esc(level.id)}" ${level.id === area.level_id ? "selected" : ""}>${this._esc(level.name)}</option>`).join("");
+    const presetOptions = this._floorPresets()
+      .filter((preset) => !existingNames.has(preset.name.toLowerCase()))
+      .map((preset) => `<option value="__floor__:${this._esc(preset.name)}">${this._esc(preset.name)}</option>`)
+      .join("");
+    return `${existingOptions}${presetOptions ? `<optgroup label="WEITERES STOCKWERK">${presetOptions}</optgroup>` : ""}`;
   }
 
   _houseArea(config = this._config) {
@@ -328,7 +407,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _levelSelector(config = this._config, selectedLevelId = this._viewLevelId, action = "set-view-level") {
-    const levels = this._sortedLevels(config);
+    const levels = this._buildingLevels(config);
     if (!levels.length) return "";
     return `<div class="view-level-toolbar"><span>STOCKWERK</span><div class="view-level-tabs">${levels.map((level) => `<button class="view-level-tab ${level.id === selectedLevelId ? "active" : ""}" data-action="${action}" data-level-id="${this._esc(level.id)}">${this._esc(level.name)}</button>`).join("")}</div></div>`;
   }
@@ -589,7 +668,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       }));
     }
 
-    const level = this._levelById(this._viewLevelId, config) || this._sortedLevels(config)[0];
+    const level = this._levelById(this._viewLevelId, config) || this._buildingLevels(config)[0];
     return `
       <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG + ENERGIE HEUTE</div>
       <div class="system-grid module-board">${topNodes.length ? this._gridCells(topNodes) : this._empty("Keine Netzreferenz, Erzeuger oder Speicher konfiguriert.")}</div>
@@ -699,7 +778,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _renderAreas() {
     this._syncLayoutState(this._config);
-    const levels = this._sortedLevels(this._config);
+    const levels = this._buildingLevels(this._config);
     const level = this._levelById(this._viewLevelId, this._config) || levels[0];
     const house = this._houseArea(this._config);
     return `
@@ -716,10 +795,24 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const rows = interactive ? 12 : this._levelRows(level, config);
     return `
       <section class="building-level ${interactive ? "editing" : ""}">
-        <div class="level-head ${compactHeader ? "compact" : ""}"><span>LEVEL ${String(Number(level.order || 0) + 1).padStart(2, "0")}</span><strong>${this._esc(level.name)}</strong><em>${areas.length} BEREICHE</em></div>
+        <div class="level-head ${compactHeader ? "compact" : ""}"><span>LEVEL</span><strong>${this._esc(level.name)}</strong><em>${areas.length} BEREICHE</em></div>
         <div class="level-grid ${interactive ? "layout-grid" : "readonly"}" data-layout-grid ${interactive ? `data-level-id="${this._esc(level.id)}"` : ""} style="--rows:${rows}">
           ${areas.map((area) => this._renderAreaTile(area, config, interactive)).join("")}
           ${!areas.length ? `<div class="layout-empty">KEINE BEREICHE AUF DIESEM STOCKWERK</div>` : ""}
+        </div>
+      </section>`;
+  }
+
+  _renderEditorFloorGroup(level, config = this._draft || this._config) {
+    const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id);
+    return `
+      <section class="editor-floor-group" data-floor-group="${this._esc(level.id)}">
+        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span>${areas.length}</span></aside>
+        <div class="floor-layout-body">
+          <div class="floor-layout-meta"><span>STOCKWERK</span><strong>${this._esc(level.name)}</strong><em>${areas.length} BEREICHE</em></div>
+          <div class="level-grid layout-grid" data-layout-grid data-level-id="${this._esc(level.id)}" style="--rows:12">
+            ${areas.map((area) => this._renderAreaTile(area, config, true)).join("")}
+          </div>
         </div>
       </section>`;
   }
@@ -859,44 +952,33 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _configAreasSection(d) {
     this._syncLayoutState(d);
-    const levels = this._sortedLevels(d);
-    const level = this._levelById(this._layoutLevelId, d) || levels[0];
+    const levels = this._buildingLevels(d);
     const house = this._houseArea(d);
-    const area = this._areaById(this._selectedAreaId, d) || (d.areas || []).find((item) => item.id !== "house" && item.level_id === level?.id) || house || d.areas?.[0];
+    const area = this._areaById(this._selectedAreaId, d) || (d.areas || []).find((item) => item.id !== "house") || house || d.areas?.[0];
     if (area) this._selectedAreaId = area.id;
     return `
       <section class="config-card wide layout-config-card">
         <div class="config-head"><span>06 / BUILDING LAYOUT</span><strong>GEBÄUDEPLAN UND BEREICHSBERECHNUNG</strong><button data-action="add-area">+ BEREICH</button></div>
         <div class="layout-editor">
           <div class="layout-stage">
-            <div class="layout-help">HAUS = FESTER ROOT-BEREICH · STOCKWERK AUSWÄHLEN · KACHELN RASTEN OHNE ABSTAND EIN · KOLLISIONEN WERDEN VERMIEDEN</div>
+            <div class="layout-help">HAUS = FESTER ROOT-BEREICH · STOCKWERK WIRD DIREKT AM BEREICH GEWÄHLT · KACHELN GRUPPIEREN SICH AUTOMATISCH JE STOCKWERK</div>
             ${house ? this._renderHouseTile(house, d, true) : ""}
-            <div class="level-toolbar">
-              <div class="level-tabs">
-                ${levels.map((item) => `<button class="level-tab ${item.id === level?.id ? "active" : ""}" data-action="set-layout-level" data-level-id="${this._esc(item.id)}">${this._esc(item.name)}</button>`).join("")}
-                <button class="level-tab add" data-action="add-level">+ STOCKWERK</button>
-              </div>
-              ${level ? `<div class="level-tools">
-                <input data-level-id="${this._esc(level.id)}" data-level-field="name" value="${this._esc(level.name)}" aria-label="Stockwerksname">
-                <button data-action="move-level" data-level-id="${this._esc(level.id)}" data-direction="-1">←</button>
-                <button data-action="move-level" data-level-id="${this._esc(level.id)}" data-direction="1">→</button>
-                <button class="danger" data-action="remove-level" data-level-id="${this._esc(level.id)}" ${levels.length <= 1 ? "disabled" : ""}>REMOVE</button>
-              </div>` : ""}
+            <div class="editor-floor-stack">
+              ${levels.length ? levels.map((item) => this._renderEditorFloorGroup(item, d)).join("") : `<div class="layout-empty standalone">NOCH KEINE BEREICHE EINEM STOCKWERK ZUGEORDNET</div>`}
             </div>
-            ${level ? this._renderLevelPlan(level, d, true, true) : this._empty("Kein Stockwerk vorhanden.")}
           </div>
           <aside class="layout-inspector">
             ${area ? this._renderAreaInspector(area, d) : `<div class="config-empty">BEREICH AUSWÄHLEN</div>`}
           </aside>
         </div>
-        <div class="hint">Haus ist der feste Gesamtbereich und wird unabhängig von der Stockwerksposition oben über die volle Breite dargestellt. Die räumliche Position der übrigen Bereiche ist rein optisch; Messung und Berechnung bleiben davon getrennt.</div>
+        <div class="hint">Das Stockwerk wird in der Bereichskonfiguration gewählt. Beim Wechsel wird die Kachel sofort in die entsprechende Stockwerksgruppe verschoben und auf die nächste freie Rasterposition eingerastet. Die Mess- und Berechnungslogik bleibt unabhängig von der optischen Gebäudeanordnung.</div>
       </section>`;
   }
 
   _renderAreaInspector(area, d) {
     const isHouse = area.id === "house";
     const layout = area.layout || { x: 1, y: 1, w: 3, h: 2 };
-    const levelOptions = this._sortedLevels(d).map((level) => `<option value="${this._esc(level.id)}" ${level.id === area.level_id ? "selected" : ""}>${this._esc(level.name)}</option>`).join("");
+    const levelOptions = this._floorSelectOptions(area, d);
     let calculation = "";
     if (area.mode === "calculated") {
       const type = area.calculation_type || "difference";
@@ -969,10 +1051,14 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
     if (action === "add-area") {
-      const levelId = this._layoutLevelId || this._draft.levels?.[0]?.id;
+      const selected = this._areaById(this._selectedAreaId, this._draft);
+      const selectedLevel = selected && selected.id !== "house" ? this._levelById(selected.level_id, this._draft) : null;
+      const defaultLevel = selectedLevel || this._ensureFloor("EG", this._draft) || this._draft.levels?.[0];
+      const levelId = defaultLevel?.id;
       const layout = this._firstFreeLayout(levelId, this._draft, 3, 2);
       const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], layout };
       this._draft.areas.push(area);
+      this._layoutLevelId = levelId;
       this._selectedAreaId = area.id;
       this._render();
       return;
@@ -1122,10 +1208,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
         return;
       }
       if (target.dataset.areaField) {
-        area[target.dataset.areaField] = target.value;
+        let nextValue = target.value;
+        if (target.dataset.areaField === "level_id" && area.id !== "house" && nextValue.startsWith("__floor__:")) {
+          const floorName = nextValue.slice("__floor__:".length);
+          const floor = this._ensureFloor(floorName, this._draft);
+          nextValue = floor?.id || area.level_id;
+        }
+        area[target.dataset.areaField] = nextValue;
         if (target.dataset.areaField === "level_id" && area.id !== "house") {
-          this._layoutLevelId = target.value;
-          area.layout = this._findFreeLayout(area, area.layout, this._draft);
+          this._layoutLevelId = nextValue;
+          area.layout = this._findFreeLayout(area, { ...area.layout, x: 1, y: 1 }, this._draft);
         }
         if (["mode", "calculation_type", "level_id", "name", "basis_area_id"].includes(target.dataset.areaField)) this._render();
       }
@@ -1335,6 +1427,15 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .error-box { color:var(--fault); }
 
         .building-stack { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:0; }
+        .editor-floor-stack { margin-top:12px; display:flex; flex-direction:column; gap:0; border-top:1px solid var(--line-strong); }
+        .editor-floor-group { display:grid; grid-template-columns:58px minmax(0,1fr); min-width:0; border:1px solid var(--line-strong); border-top:0; background:var(--panel); }
+        .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:10px 4px; }
+        .floor-indicator strong { writing-mode:vertical-rl; transform:rotate(180deg); color:var(--text); font:800 13px/1 ui-monospace, monospace; letter-spacing:.12em; white-space:nowrap; }
+        .floor-indicator span { min-width:26px; min-height:26px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace, monospace; }
+        .floor-layout-body { min-width:0; }
+        .floor-layout-meta { min-height:38px; display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:0 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
+        .floor-layout-meta span, .floor-layout-meta em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
+        .floor-layout-meta strong { font-size:11px; letter-spacing:.06em; }
         .view-level-toolbar { max-width:1500px; margin:12px auto 0; display:flex; align-items:center; gap:14px; min-height:42px; padding:6px 10px; border:1px solid var(--line); border-bottom:0; background:rgba(255,255,255,.015); }
         .view-level-toolbar > span { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; }
         .view-level-tabs { display:flex; gap:0; flex-wrap:wrap; }
@@ -1369,6 +1470,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .area-tile-energy span { color:var(--muted); }
         .area-tile-formula { color:var(--muted); margin-top:7px; font:600 8px/1.25 ui-monospace, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .layout-empty { grid-column:1 / -1; grid-row:1 / span 2; display:flex; align-items:center; justify-content:center; color:var(--muted); font:650 10px/1 ui-monospace, monospace; letter-spacing:.08em; }
+        .layout-empty.standalone { min-height:120px; border:1px dashed var(--line); }
         .layout-config-card { overflow:hidden; }
         .level-toolbar { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 0; border-bottom:0; background:rgba(255,255,255,.015); }
         .level-tabs { display:flex; gap:0; flex-wrap:wrap; }
@@ -1416,6 +1518,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
           .level-tools { flex-wrap:wrap; }
           .layout-editor { grid-template-columns:1fr; }
           .layout-stage { border-right:0; border-bottom:1px solid var(--line); }
+          .editor-floor-group { grid-template-columns:42px minmax(0,1fr); }
+          .floor-indicator strong { font-size:10px; }
+          .floor-layout-meta { grid-template-columns:1fr auto; }
+          .floor-layout-meta span { display:none; }
           .level-grid.layout-grid { grid-template-rows:repeat(12,38px); min-height:456px; background-size:calc(100% / 12) 100%,100% 38px; }
           .system-cell { grid-column:1 / -1 !important; }
           .house-values { grid-template-columns:1fr; }
