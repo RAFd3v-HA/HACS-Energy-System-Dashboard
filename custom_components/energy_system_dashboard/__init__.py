@@ -98,7 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.1.2",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.1.3",
                 }
             },
             require_admin=False,

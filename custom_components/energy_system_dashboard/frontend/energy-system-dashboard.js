@@ -226,6 +226,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return (config?.areas || []).filter((area) => !area.parent_id || !(config.areas || []).some((candidate) => candidate.id === area.parent_id));
   }
 
+  _leafAreas(config = this._config) {
+    return (config?.areas || []).filter((area) => this._areaChildren(area.id, config).length === 0);
+  }
+
   _renderLoading() {
     this.shadowRoot.innerHTML = `${this._styles()}<main class="shell"><div class="loading">ENERGY SYSTEM<br><span>Konfiguration wird geladen …</span></div></main>`;
   }
@@ -327,7 +331,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       <div class="node-row top-nodes">${topNodes.length ? topNodes.join("") : this._empty("Keine Netzreferenz, Erzeuger oder Speicher konfiguriert.")}</div>
       <div class="wire vertical ${topNodes.length ? "active" : ""}"></div>
       <div class="bus">
-        <span>AC ENERGY BUS</span>
+        <span>ELEKTRISCHE VERTEILUNG</span>
         <strong>${this._housePowerLabel()}</strong>
       </div>
       <div class="wire vertical active"></div>
@@ -335,9 +339,22 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _housePowerLabel() {
-    const roots = this._rootAreas();
-    const measured = roots.map((area) => this._powerW(area.power_entity)).filter((value) => value !== null);
-    if (!measured.length) return "NO REFERENCE";
+    const leafAreas = this._leafAreas();
+    const seenEntities = new Set();
+    const measured = [];
+
+    for (const area of leafAreas) {
+      const entityId = String(area.power_entity || "").trim();
+      if (!entityId || seenEntities.has(entityId)) continue;
+
+      const power = this._powerW(entityId);
+      if (power === null) continue;
+
+      seenEntities.add(entityId);
+      measured.push(power);
+    }
+
+    if (!measured.length) return "KEIN MESSWERT";
     return this._formatPowerW(measured.reduce((sum, value) => sum + value, 0));
   }
 

@@ -37,3 +37,8 @@ Die bestehende Dashboard-Konfiguration wird weiterverwendet. Neue kWh-Felder sta
 - Echtzeitwerte direkt aus vorhandenen Home-Assistant-Entities
 
 Die Integration kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Sie verwendet ausschließlich die bereits in Home Assistant vorhandenen Entities.
+
+
+## V0.1.3 – Leistung der elektrischen Verteilung
+
+Die aktuelle Leistung in der elektrischen Hauptansicht wird aus den Leistungs-Entities aller Blatt-Bereiche summiert. Ein Blatt-Bereich ist ein Bereich ohne untergeordnete Bereiche. Parent-Bereiche werden nicht in diese Summe aufgenommen. Dieselbe Entity-ID wird höchstens einmal berücksichtigt.
