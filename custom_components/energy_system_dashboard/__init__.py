@@ -33,7 +33,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 6,
+    "version": 8,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -59,6 +59,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "id": "house",
             "name": "Haus",
             "level_id": DEFAULT_LEVEL_ID,
+            "parent_id": "",
             "mode": "measured",
             "power_entity": "",
             "energy_entity": "",
@@ -66,6 +67,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "basis_area_id": "",
             "source_area_ids": [],
             "terms": [],
+            "power_terms": [],
+            "energy_terms": [],
             "layout": {"x": 1, "y": 1, "w": 12, "h": 2},
             "layout_mode": "docked",
             "dock_order": 0,
@@ -111,7 +114,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.0",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.1",
                 }
             },
             require_admin=False,
@@ -170,11 +173,69 @@ def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, number))
 
 
+def _normalize_measure_terms(raw_terms: Any) -> list[dict[str, str]]:
+    """Normalize calculation terms that reference an area value or HA entity."""
+    if not isinstance(raw_terms, list):
+        return []
+    result: list[dict[str, str]] = []
+    for raw_term in raw_terms:
+        if not isinstance(raw_term, dict):
+            continue
+        source_type = str(raw_term.get("source_type") or "area")
+        if source_type not in {"area", "entity"}:
+            source_type = "area"
+        source_id = str(raw_term.get("source_id") or raw_term.get("area_id") or "")
+        if not source_id:
+            continue
+        result.append(
+            {
+                "op": "-" if str(raw_term.get("op")) == "-" else "+",
+                "source_type": source_type,
+                "source_id": source_id,
+            }
+        )
+    return result
+
+
+def _legacy_measure_terms(
+    calculation_type: str,
+    basis_area_id: str,
+    source_area_ids: list[str],
+    terms: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Migrate the pre-0.3.1 area calculation editor to explicit measure terms."""
+    if calculation_type == "difference":
+        result: list[dict[str, str]] = []
+        if basis_area_id:
+            result.append({"op": "+", "source_type": "area", "source_id": basis_area_id})
+        result.extend(
+            {"op": "-", "source_type": "area", "source_id": area_id}
+            for area_id in source_area_ids
+            if area_id
+        )
+        return result
+    if calculation_type == "sum":
+        return [
+            {"op": "+", "source_type": "area", "source_id": area_id}
+            for area_id in source_area_ids
+            if area_id
+        ]
+    return [
+        {
+            "op": "-" if str(term.get("op")) == "-" else "+",
+            "source_type": "area",
+            "source_id": str(term.get("area_id") or ""),
+        }
+        for term in terms
+        if term.get("area_id")
+    ]
+
+
 def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 6
+    normalized["version"] = 8
 
     for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -314,6 +375,24 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         terms = area.get("terms")
         if not isinstance(terms, list):
             terms = []
+        legacy_terms = [
+            {
+                "op": "-" if str(term.get("op")) == "-" else "+",
+                "area_id": str(term.get("area_id") or ""),
+            }
+            for term in terms
+            if isinstance(term, dict) and term.get("area_id")
+        ]
+        basis_area_id = str(area.get("basis_area_id") or "")
+        normalized_sources = [str(item) for item in source_area_ids if item]
+        power_terms = _normalize_measure_terms(area.get("power_terms"))
+        energy_terms = _normalize_measure_terms(area.get("energy_terms"))
+        if mode == "calculated" and not power_terms and not energy_terms:
+            migrated_terms = _legacy_measure_terms(
+                calculation_type, basis_area_id, normalized_sources, legacy_terms
+            )
+            power_terms = [dict(term) for term in migrated_terms]
+            energy_terms = [dict(term) for term in migrated_terms]
 
         layout_mode = str(area.get("layout_mode") or "docked")
         if layout_mode not in {"docked", "free"}:
@@ -324,20 +403,16 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "id": area_id,
                 "name": str(area.get("name") or f"Bereich {index + 1}"),
                 "level_id": str(area.get("level_id") or default_level_id),
+                "parent_id": "" if is_house else str(area.get("parent_id") or "house"),
                 "mode": mode,
                 "power_entity": str(area.get("power_entity") or ""),
                 "energy_entity": str(area.get("energy_entity") or ""),
                 "calculation_type": calculation_type,
-                "basis_area_id": str(area.get("basis_area_id") or ""),
-                "source_area_ids": [str(item) for item in source_area_ids if item],
-                "terms": [
-                    {
-                        "op": "-" if str(term.get("op")) == "-" else "+",
-                        "area_id": str(term.get("area_id") or ""),
-                    }
-                    for term in terms
-                    if isinstance(term, dict)
-                ],
+                "basis_area_id": basis_area_id,
+                "source_area_ids": normalized_sources,
+                "terms": legacy_terms,
+                "power_terms": power_terms,
+                "energy_terms": energy_terms,
                 "layout": {"x": x, "y": y, "w": width, "h": height},
                 "layout_mode": "docked" if is_house else layout_mode,
                 "dock_order": _safe_int(area.get("dock_order"), y * 100 + x, 0, 10000),
@@ -358,6 +433,10 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     for area in areas:
         if area["level_id"] not in valid_level_ids:
             area["level_id"] = default_level_id
+        if area["id"] == "house":
+            area["parent_id"] = ""
+        elif area["parent_id"] not in valid_ids or area["parent_id"] == area["id"]:
+            area["parent_id"] = "house" if "house" in valid_ids else ""
         if area["basis_area_id"] not in valid_ids or area["basis_area_id"] == area["id"]:
             area["basis_area_id"] = ""
         area["source_area_ids"] = [
@@ -370,6 +449,32 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             for term in area["terms"]
             if term["area_id"] in valid_ids and term["area_id"] != area["id"]
         ]
+        for key in ("power_terms", "energy_terms"):
+            area[key] = [
+                term
+                for term in area[key]
+                if term["source_type"] == "entity"
+                or (term["source_id"] in valid_ids and term["source_id"] != area["id"])
+            ]
+
+
+    # Parent/child hierarchy is independent from calculation dependencies.
+    # Break malformed imported parent cycles by attaching the affected node to house.
+    hierarchy_by_id = {area["id"]: area for area in areas}
+
+    def has_parent_cycle(start_id: str) -> bool:
+        seen: set[str] = set()
+        current_id = start_id
+        while current_id and current_id in hierarchy_by_id:
+            if current_id in seen:
+                return True
+            seen.add(current_id)
+            current_id = hierarchy_by_id[current_id].get("parent_id", "")
+        return False
+
+    for area in areas:
+        if area["id"] != "house" and has_parent_cycle(area["id"]):
+            area["parent_id"] = "house" if "house" in valid_ids else ""
 
     # Keep docked areas in a stable per-floor order. Existing 0.2.x layouts
     # migrate to the visual top/left order they previously used.
@@ -396,14 +501,12 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     def dependencies(area: dict[str, Any]) -> set[str]:
         if area["mode"] != "calculated":
             return set()
-        if area["calculation_type"] == "difference":
-            result = set(area["source_area_ids"])
-            if area["basis_area_id"]:
-                result.add(area["basis_area_id"])
-            return result
-        if area["calculation_type"] == "sum":
-            return set(area["source_area_ids"])
-        return {term["area_id"] for term in area["terms"]}
+        return {
+            term["source_id"]
+            for key in ("power_terms", "energy_terms")
+            for term in area.get(key, [])
+            if term.get("source_type") == "area" and term.get("source_id")
+        }
 
     def has_cycle(start_id: str) -> bool:
         visiting: set[str] = set()
@@ -430,6 +533,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             area["basis_area_id"] = ""
             area["source_area_ids"] = []
             area["terms"] = []
+            area["power_terms"] = []
+            area["energy_terms"] = []
 
     normalized["areas"] = areas or [dict(DEFAULT_CONFIG["areas"][0])]
     return normalized

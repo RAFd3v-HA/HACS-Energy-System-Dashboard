@@ -139,7 +139,7 @@ type: custom:energy-system-card
 view: electrical
 ```
 
-Zeigt Netz, Erzeuger, Speicher, elektrische Verteilung und das ausgewählte Stockwerk.
+Zeigt Netz, Erzeuger, Speicher und elektrische Verteilung. Im Panel werden alle konfigurierten Stockwerke mit seitlicher Stockwerksreferenz gestapelt; in der read-only Karte kann `floor_selector` zwischen Stockwerken umschalten.
 
 ## `thermal`
 
@@ -157,7 +157,7 @@ type: custom:energy-system-card
 view: building
 ```
 
-Zeigt den Haus-Root-Bereich und die gespeicherte magnetische Bereichsanordnung des ausgewählten Stockwerks.
+Zeigt den Haus-Root-Bereich und die gespeicherte magnetische Bereichsanordnung. Mit `floor_selector: true` wird in der read-only Karte zwischen den konfigurierten Stockwerken umgeschaltet.
 
 ---
 
@@ -318,6 +318,11 @@ KARTEN-YAML
 Folgende Daten gehören daher NICHT in die Karten-YAML:
 
 - Shelly Entity-IDs
+- Tasmota Entity-IDs
+- Viessmann Entity-IDs
+- my-PV Entity-IDs
+
+Diese Zuordnungen werden zentral im Energy-System-Konfigurator gepflegt.
 - Tasmota Entity-IDs
 - Viessmann Entity-IDs
 - my-PV Entity-IDs

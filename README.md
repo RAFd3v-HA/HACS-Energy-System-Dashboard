@@ -1,142 +1,154 @@
-# Energy System Dashboard 0.3.0
+# Energy System Dashboard 0.3.1
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## Neu in 0.3.0
+## Neu in 0.3.1
 
-- neue kombinierte Hauptansicht **SYSTEM**
-- Hauptnavigation jetzt: `SYSTEM`, `ELEKTRISCH`, `THERMISCH`, `KONFIGURATION`
-- der frühere Hauptreiter `BEREICHE` entfällt
-- Gebäudeansicht bleibt Bestandteil von SYSTEM und ELEKTRISCH
-- read-only Lovelace-Karte `custom:energy-system-card`
-- grafische Kartenkonfiguration in Home Assistant
-- vollständig dokumentierte YAML-Schnittstelle
-- magnetisches Stockwerkslayout
-- angedockte Kacheln werden automatisch lückenlos und zentriert angeordnet
-- Drag-and-drop im Verbund ändert die Reihenfolge
-- Kacheln können durch Ablegen außerhalb des Verbunds frei gelöst werden
-- freie Kacheln docken beim Ablegen nahe am Verbund wieder automatisch an
-- Stockwerksflächen wachsen dynamisch mit dem benötigten Layout
-- freie Stockwerksnamen können direkt in der Bereichskonfiguration angelegt werden
+- Stockwerke werden in `SYSTEM` und `ELEKTRISCH` als gemeinsamer Gebäudestapel dargestellt
+- jedes Stockwerk besitzt die seitliche, vertikale Stockwerksreferenz aus dem Gebäudeeditor
+- im **Magnetischen Gebäudeplan** gibt es einen zusätzlichen, gut sichtbaren Button **GEBÄUDEPLAN SPEICHERN**
+- echte Parent/Child-Hierarchie für Bereiche über `parent_id`
+- jeder Bereich besitzt im Inspektor eine Unterkonfiguration **HIERARCHIE / PARENT & CHILD**
+- `+ UNTERBEREICH` legt direkt ein Child unter dem ausgewählten Parent an
+- bestehende Bereiche können einem Parent nachträglich zugeordnet werden
+- berechnete Bereiche verwenden einen messwertbezogenen GUI-Berechnungseditor
+- aktuelle Leistung und Energie heute werden unabhängig voneinander konfiguriert
+- Berechnungsquellen können ein Bereichswert oder eine konkrete Home-Assistant-Entity sein
+- nicht konfigurierte Module und Bereiche werden in den Live-Übersichten nicht gerendert
+- die elektrische Verteilung summiert die konfigurierten Blattbereiche der echten Parent/Child-Hierarchie
+- bestehende 0.3.0-Bereichsberechnungen werden automatisch auf das neue Messwertmodell migriert
 
 ## Installation / Update
 
-1. `/config/custom_components/energy_system_dashboard` vollständig ersetzen.
+1. Den bisherigen Ordner `/config/custom_components/energy_system_dashboard` vollständig ersetzen.
 2. `custom_components/energy_system_dashboard` aus diesem Paket nach `/config/custom_components/` kopieren.
 3. Home Assistant vollständig neu starten.
 4. **Energiesystem** in der Seitenleiste öffnen.
-5. Die vorhandene Konfiguration prüfen und speichern.
+5. Unter **KONFIGURATION** die migrierten Bereiche kontrollieren und speichern.
 
-Bestehende 0.2.x-Konfigurationen werden übernommen. Bisherige Bereichskacheln werden standardmäßig in den magnetisch angedockten Modus migriert.
-
----
-
-# Read-only Karte im Home-Assistant-Dashboard
-
-Die Lovelace-Karte verwendet dieselbe zentral gespeicherte Topologie wie das Seitenleisten-Panel.
-
-Es werden **keine Entity-IDs in der Karten-YAML konfiguriert**.
-
-## 1. JavaScript-Ressource registrieren
-
-Die Integration stellt die Karten-Datei unter dieser URL bereit:
-
-```text
-/energy_system_dashboard/energy-system-card.js?v=0.3.0
-```
-
-In Home Assistant unter **Einstellungen → Dashboards → Ressourcen** eine neue JavaScript-Modul-Ressource anlegen:
-
-```text
-URL:  /energy_system_dashboard/energy-system-card.js?v=0.3.0
-Typ:  JavaScript-Modul
-```
-
-Bei YAML-verwalteten Dashboard-Ressourcen:
-
-```yaml
-lovelace:
-  resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.0
-      type: module
-```
-
-Danach die Dashboard-Seite neu laden.
-
-## 2. Einfachste Kartenkonfiguration
-
-```yaml
-type: custom:energy-system-card
-view: system
-```
-
-Die Karte ist read-only. Sie kann die gespeicherte Energy-System-Konfiguration nicht verändern.
-
-## Grafische Konfiguration
-
-Nach dem Laden der Ressource erscheint **Energy System** im Karten-Picker von Home Assistant.
-
-Die grafische Kartenkonfiguration bietet:
-
-- Ansicht
-- Darstellung
-- eigener Titel
-- Stockwerksauswahl
-- Standard-Stockwerk
-- Energie heute ein-/ausblenden
-- Statuswerte ein-/ausblenden
-
-## YAML-Dokumentation
-
-Vollständige Referenz:
-
-- [`docs/card-yaml-reference.md`](docs/card-yaml-reference.md)
-- [`docs/card-examples.yaml`](docs/card-examples.yaml)
+Die zentrale Konfiguration wird beim Laden normalisiert. V0.3.0-Bereiche ohne Parent werden standardmäßig `Haus` zugeordnet.
 
 ---
 
-# Ansichten
+# Bereichshierarchie
 
-## SYSTEM
+Die räumliche Position im Gebäude und die logische Parent/Child-Hierarchie sind getrennt.
 
-Kombinierte technische Ansicht:
+Beispiel:
 
 ```text
-ELEKTRISCH
-    ↓
-ENERGIEWANDLUNG
-    ↓
-THERMISCH
-    ↓
-GEBÄUDE
+Haus
+├── UG
+│   ├── Technik
+│   └── Heizung
+├── EG
+│   ├── Küche
+│   ├── Wohnen
+│   └── EG Rest
+└── OG
 ```
 
-Elektrische Wärmeerzeuger wie Wärmepumpe oder AC ELWA 2 bilden die Brücke zwischen elektrischer und thermischer Ebene.
+Im Inspektor eines Bereichs gibt es:
 
-## ELEKTRISCH
+```text
+HIERARCHIE / PARENT & CHILD
 
-- Netzreferenz
-- PV / Erzeuger
-- Batteriespeicher
-- elektrische Verteilung
-- Gebäude- und Stockwerkslayout
-- aktuelle Leistung
-- Energie heute
+Übergeordneter Bereich
+[ Erdgeschoss ▼ ]
 
-## THERMISCH
+UNTERBEREICHE
+Küche              KONFIGURIERT
+Wohnen              KONFIGURIERT
+EG Rest             KONFIGURIERT
 
-- Wärmepumpen
-- Heizkessel
-- elektrische Heizstäbe
-- Kamine / sonstige Wärmeerzeuger
-- Pufferspeicher
-- direkte Raumwärme
+[ + UNTERBEREICH ]
 
-## KONFIGURATION
+[ Bestehenden Bereich auswählen ▼ ] [ ZUORDNEN ]
+```
 
-Nur für Home-Assistant-Administratoren.
+Die Hierarchie ist **nicht automatisch eine Rechenformel**. Ein Child wird nur dann mathematisch einbezogen, wenn es im Berechnungseditor als Messwert ausgewählt wurde.
 
-Hier werden Datenquellen, Wärmeerzeuger, Pufferspeicher, Bereiche, Berechnungen und das Gebäudelayout eingerichtet.
+## Elektrische Gesamtleistung
+
+Für `ELEKTRISCHE VERTEILUNG` werden nur konfigurierte Blattbereiche der Parent/Child-Hierarchie addiert.
+
+```text
+EG 5,8 kW
+├── Küche     1,4 kW
+├── Wohnen    2,1 kW
+└── EG Rest   2,3 kW
+```
+
+Gezählt wird:
+
+```text
+Küche + Wohnen + EG Rest = 5,8 kW
+```
+
+`EG` wird nicht zusätzlich addiert.
+
+---
+
+# GUI-Berechnungseditor
+
+Ein berechneter Bereich besitzt zwei unabhängige Berechnungen:
+
+```text
+AKTUELLE LEISTUNG
+ENERGIE HEUTE
+```
+
+Für jede Berechnung werden Messwerte über die GUI ausgewählt.
+
+Beispiel Leistung:
+
+```text
+OP   MESSWERT
++    Erdgeschoss · AKTUELLE LEISTUNG
+-    Küche · AKTUELLE LEISTUNG
+-    Wohnen · AKTUELLE LEISTUNG
+```
+
+Beispiel Energie heute:
+
+```text
+OP   MESSWERT
++    sensor.shelly_eg_total_energy
+-    Küche · ENERGIE HEUTE
+-    Wohnen · ENERGIE HEUTE
+```
+
+Als Quelle sind möglich:
+
+- **Bereichswerte**: bereits gemessene oder berechnete Bereiche
+- **Home Assistant Entities**: konkrete Power- beziehungsweise Energy-Entities
+
+Die Entity-Auswahl wird passend zum Zielwert gefiltert:
+
+- Leistung: `power`, W, kW, MW
+- Energie heute: `energy`, Wh, kWh, MWh usw.
+
+Zyklische Bereichsberechnungen werden verhindert beziehungsweise beim Laden einer fehlerhaften importierten Konfiguration entfernt.
+
+## Energie heute
+
+Eine ausgewählte Energie-Entity darf ein Gesamtzähler sein. Das Dashboard verwendet Home Assistants Recorder-Statistik ab lokalem Tagesbeginn und zeigt die Änderung des aktuellen Tages.
+
+---
+
+# Stockwerksdarstellung
+
+Im Panel werden die belegten, konfigurierten Stockwerke gemeinsam übereinander dargestellt:
+
+```text
+│ OG │  [ BAD ][ SCHLAFEN ][ KIND ]
+│ EG │  [ KÜCHE ][ WOHNEN ][ BÜRO ]
+│ UG │  [ TECHNIK ][ HEIZUNG ]
+```
+
+Die seitliche Referenz entspricht dem Magnetischen Gebäudeplan.
+
+Nicht konfigurierte Bereiche bleiben ausschließlich im Konfigurator sichtbar und füllen die Live-Ansichten nicht mit `—`-Kacheln.
 
 ---
 
@@ -153,62 +165,70 @@ FREE
 ## DOCKED
 
 - automatische Zentrierung pro Stockwerk
-- Kacheln liegen ohne künstliche Zwischenräume aneinander
-- Breite und Höhe der Kachel bleiben konfigurierbar
-- Drag-and-drop innerhalb des Verbunds ändert die Reihenfolge
-- die Stockwerksfläche wächst mit den benötigten Reihen
+- lückenloser Kachelverbund
+- Drag-and-drop im Verbund ändert die Reihenfolge
+- Stockwerksfläche wächst dynamisch
 
 ## FREE
 
-Wird eine Kachel deutlich außerhalb des angedockten Verbunds abgelegt, wird sie frei positioniert.
+Eine deutlich außerhalb des Verbunds abgelegte Kachel wird frei positioniert. In der Nähe des Verbunds dockt sie wieder automatisch an.
 
-Die freie Kachel behält ihre Rasterposition.
+Eigene Stockwerksnamen können direkt in der Bereichskonfiguration ergänzt werden.
 
-Wird sie wieder nahe am angedockten Verbund abgelegt, wechselt sie automatisch zurück zu `DOCKED` und wird an der Drop-Position einsortiert.
-
-Der Modus kann zusätzlich im Bereichsinspektor manuell umgeschaltet werden.
-
-## Eigene Stockwerksnamen
-
-In der Bereichskonfiguration kann direkt unter der Stockwerksauswahl ein eigener Name eingetragen werden, zum Beispiel:
+Am unteren Ende des Gebäudeeditors befindet sich zusätzlich:
 
 ```text
-Galerie
-Werkstatt
-Garage
-Technikebene
-Nebengebäude
+[ GEBÄUDEPLAN SPEICHERN ]
 ```
-
-Mit **HINZUFÜGEN** wird die Ebene angelegt und der aktuell ausgewählte Bereich sofort zugeordnet.
 
 ---
 
-# Energie heute
+# Read-only Lovelace-Karte
 
-Die konfigurierte Energie-Entity darf ein Gesamtzähler sein.
+Die Lovelace-Karte verwendet dieselbe zentral gespeicherte Topologie. Es werden keine Entity-IDs in der Karten-YAML konfiguriert.
 
-Das Dashboard zeigt den Gesamtstand nicht direkt als Tageswert an. Es verwendet Home Assistants Recorder-Statistik ab lokalem Tagesbeginn und wertet die Statistikänderung des aktuellen Tages aus.
-
-Berechnete Bereiche verwenden dieselbe Berechnungstopologie für:
-
-- aktuelle Leistung
-- Energie heute
-
-Beispiel:
+## JavaScript-Ressource
 
 ```text
-EG REST = EG - KÜCHE - WOHNEN
+/energy_system_dashboard/energy-system-card.js?v=0.3.1
 ```
 
-Dann gilt automatisch auch:
+Home Assistant:
 
 ```text
-EG REST HEUTE = EG HEUTE - KÜCHE HEUTE - WOHNEN HEUTE
+Einstellungen → Dashboards → Ressourcen
 ```
 
-## Datenquellen
+```text
+URL: /energy_system_dashboard/energy-system-card.js?v=0.3.1
+Typ: JavaScript-Modul
+```
+
+Bei YAML-verwalteten Ressourcen:
+
+```yaml
+lovelace:
+  resources:
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.1
+      type: module
+```
+
+## Minimalbeispiel
+
+```yaml
+type: custom:energy-system-card
+view: system
+```
+
+Vollständige Dokumentation:
+
+- `docs/card-yaml-reference.md`
+- `docs/card-examples.yaml`
+
+---
+
+# Datenquellen
 
 Das Dashboard kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV.
 
-Es verwendet vorhandene Home-Assistant-Entities und Home Assistants Recorder-Statistik.
+Es verwendet vorhandene Home-Assistant-Entities und die Recorder-Statistik.
