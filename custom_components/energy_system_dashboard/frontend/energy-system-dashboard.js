@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.3.6";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.4.0";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -16,6 +16,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this._cardConfig = null;
     this._dailyEnergy = {};
     this._dailyLoading = false;
+    this._calculationValues = {};
+    this._calculationUnsub = null;
+    this._selectedCalculationId = null;
     this._layoutLevelId = null;
     this._viewLevelId = null;
     this._selectedAreaId = null;
@@ -94,6 +97,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this.shadowRoot.removeEventListener("dragend", this._boundDragEnd);
     if (this._dailyRefreshTimer) window.clearInterval(this._dailyRefreshTimer);
     this._dailyRefreshTimer = null;
+    if (this._calculationUnsub) this._calculationUnsub();
+    this._calculationUnsub = null;
   }
 
   async _loadConfig() {
@@ -107,12 +112,29 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._draft = this._clone(config);
       this._loaded = true;
       this._syncLayoutState();
+      this._selectedCalculationId = this._config?.calculations?.[0]?.id || null;
+      await this._subscribeCalculations();
       this._render();
       await this._refreshDailyEnergy();
     } catch (error) {
       this._renderError(`Konfiguration konnte nicht geladen werden: ${error?.message || error}`);
     } finally {
       this._loading = false;
+    }
+  }
+
+  async _subscribeCalculations() {
+    if (!this._hass?.connection || this._calculationUnsub) return;
+    try {
+      this._calculationUnsub = await this._hass.connection.subscribeMessage(
+        (message) => {
+          this._calculationValues = message?.values || {};
+          if (this.isConnected && this._loaded) this._render();
+        },
+        { type: "energy_system_dashboard/subscribe_calculations" },
+      );
+    } catch (error) {
+      console.warn("Energy System Dashboard: Berechnungswerte konnten nicht abonniert werden", error);
     }
   }
 
@@ -202,10 +224,18 @@ class EnergySystemDashboardPanel extends HTMLElement {
     for (const area of config?.areas || []) {
       add(area.energy_entity);
       add(area.thermal_energy_entity);
+      if (area.energy_source_type === "entity") add(area.energy_source_id);
+      if (area.thermal_energy_source_type === "entity") add(area.thermal_energy_source_id);
       for (const key of ["energy_terms", "thermal_energy_terms"]) {
         for (const term of area[key] || []) {
           if (term?.source_type === "entity") add(term.source_id);
         }
+      }
+    }
+    for (const calculation of config?.calculations || []) {
+      if (!["energy", "thermal_energy"].includes(calculation.kind)) continue;
+      for (const term of calculation.terms || []) {
+        if (term?.source_type === "entity") add(term.source_id);
       }
     }
     return ids;
@@ -259,6 +289,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
       console.warn("Energy System Dashboard: Tagesenergie konnte nicht geladen werden", error);
     } finally {
       this._dailyLoading = false;
+    this._calculationValues = {};
+    this._calculationUnsub = null;
+    this._selectedCalculationId = null;
     }
   }
 
@@ -320,12 +353,39 @@ class EnergySystemDashboardPanel extends HTMLElement {
   _entityOptions(kind, selected, allowEmpty = true) {
     const options = [];
     if (allowEmpty) options.push(`<option value="">— nicht zugeordnet —</option>`);
-    for (const state of this._entityList(kind)) {
+
+    const snapshotKindMatches = (snapshot) => {
+      const calculationKind = String(snapshot?.kind || "");
+      if (kind === "power") return ["power", "thermal_power"].includes(calculationKind);
+      if (kind === "energy") return ["energy", "thermal_energy"].includes(calculationKind);
+      if (kind === "any") return true;
+      return false;
+    };
+    const calculatedSnapshots = Object.values(this._calculationValues || {})
+      .filter((snapshot) => snapshot?.entity_id && snapshotKindMatches(snapshot))
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "de"));
+    const calculatedIds = new Set(calculatedSnapshots.map((snapshot) => snapshot.entity_id));
+    if (calculatedSnapshots.length) {
+      options.push(`<optgroup label="BERECHNETE MESSWERTE">`);
+      for (const snapshot of calculatedSnapshots) {
+        const id = snapshot.entity_id;
+        const current = id === selected ? " selected" : "";
+        const state = this._state(id);
+        const unit = state?.attributes?.unit_of_measurement ? ` · ${state.attributes.unit_of_measurement}` : "";
+        options.push(`<option value="${this._esc(id)}"${current}>${this._esc(snapshot.name || this._friendly(id))} · ${this._esc(id)}${this._esc(unit)}</option>`);
+      }
+      options.push(`</optgroup>`);
+    }
+
+    const directStates = this._entityList(kind).filter((state) => !calculatedIds.has(state.entity_id));
+    if (directStates.length) options.push(`<optgroup label="HOME ASSISTANT ENTITIES">`);
+    for (const state of directStates) {
       const id = state.entity_id;
       const current = id === selected ? " selected" : "";
       const unit = state.attributes?.unit_of_measurement ? ` · ${state.attributes.unit_of_measurement}` : "";
       options.push(`<option value="${this._esc(id)}"${current}>${this._esc(this._friendly(id))} · ${this._esc(id)}${this._esc(unit)}</option>`);
     }
+    if (directStates.length) options.push(`</optgroup>`);
     return options.join("");
   }
 
@@ -480,6 +540,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _areaHasMeasure(area, kind) {
     if (!area) return false;
+    const sourceType = area[`${kind}_source_type`];
+    const sourceId = area[`${kind}_source_id`];
+    if (["entity", "calculation"].includes(sourceType) && sourceId) return true;
     const keyMap = {
       power: ["power_entity", "power_terms"],
       energy: ["energy_entity", "energy_terms"],
@@ -501,6 +564,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _isConfiguredArea(area) {
     return this._isConfiguredElectricalArea(area) || this._isConfiguredThermalArea(area);
+  }
+
+  _areaUsesCalculation(area) {
+    if (!area) return false;
+    if (["power", "energy", "thermal_power", "thermal_energy"].some((kind) => area[`${kind}_source_type`] === "calculation" && area[`${kind}_source_id`])) return true;
+    return area.mode === "calculated";
   }
   _overviewLevels(config = this._config, kind = "any") {
     const isConfigured = (area) => kind === "thermal"
@@ -566,7 +635,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   _directChildOptions(parentId, config = this._draft || this._config) {
     const children = this._childrenOf(parentId, config);
     return `<option value="">— Unterbereich auswählen —</option>` + children
-      .map((child) => `<option value="${this._esc(child.id)}">${this._esc(child.name)} · ${child.mode === "calculated" ? "C" : "M"}</option>`)
+      .map((child) => `<option value="${this._esc(child.id)}">${this._esc(child.name)} · ${this._areaUsesCalculation(child) ? "C" : "M"}</option>`)
       .join("");
   }
 
@@ -780,53 +849,117 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return this._calculationDependencies(area, config).some((dependency) => this._dependsOn(dependency, targetId, config, new Set(stack)));
   }
 
-  _measureSourceOptions(kind, currentAreaId, term, config = this._draft || this._config) {
-    const selected = term?.source_id ? `${term.source_type || "area"}:${term.source_id}` : "";
-    const isEnergy = kind === "energy" || kind === "thermal_energy";
-    const isThermal = kind === "thermal_power" || kind === "thermal_energy";
-    const areaMetric = isEnergy ? (isThermal ? "THERMISCHE ENERGIE HEUTE" : "ENERGIE HEUTE") : (isThermal ? "THERMISCHE LEISTUNG" : "AKTUELLE LEISTUNG");
+  _kindMeta(kind) {
+    const map = {
+      power: { label: "ELEKTRISCHE LEISTUNG", short: "LEISTUNG", entityKind: "power", energy: false, thermal: false },
+      energy: { label: "ENERGIE HEUTE", short: "HEUTE", entityKind: "energy", energy: true, thermal: false },
+      thermal_power: { label: "THERMISCHE LEISTUNG", short: "TH. LEISTUNG", entityKind: "power", energy: false, thermal: true },
+      thermal_energy: { label: "THERMISCHE ENERGIE HEUTE", short: "TH. HEUTE", entityKind: "energy", energy: true, thermal: true },
+    };
+    return map[kind] || map.power;
+  }
+
+  _calculationById(calculationId, config = this._config) {
+    return (config?.calculations || []).find((calculation) => calculation.id === calculationId) || null;
+  }
+
+  _calculationDependsOn(calculationId, targetId, config = this._draft || this._config, stack = new Set()) {
+    if (!calculationId || stack.has(calculationId)) return false;
+    if (calculationId === targetId) return true;
+    stack.add(calculationId);
+    const calculation = this._calculationById(calculationId, config);
+    return (calculation?.terms || [])
+      .filter((term) => term?.source_type === "calculation" && term?.source_id)
+      .some((term) => this._calculationDependsOn(term.source_id, targetId, config, new Set(stack)));
+  }
+
+  _calculationSourceOptions(calculation, term, config = this._draft || this._config) {
+    const kind = calculation?.kind || "power";
+    const meta = this._kindMeta(kind);
+    const selected = term?.source_id ? `${term.source_type || "entity"}:${term.source_id}` : "";
     const areaOptions = (config?.areas || [])
-      .filter((area) => area.id !== currentAreaId && !this._dependsOn(area.id, currentAreaId, config))
+      .filter((area) => area.id !== "house" || this._areaHasMeasure(area, kind))
       .map((area) => {
         const value = `area:${area.id}`;
-        return `<option value="${this._esc(value)}" ${value === selected ? "selected" : ""}>${this._esc(area.name)} · ${areaMetric}</option>`;
+        return `<option value="${this._esc(value)}" ${value === selected ? "selected" : ""}>${this._esc(area.name)} · ${meta.short}</option>`;
       }).join("");
-    const entityOptions = this._entityList(isEnergy ? "energy" : "power")
+    const calculationOptions = (config?.calculations || [])
+      .filter((candidate) => candidate.id !== calculation.id && candidate.kind === kind && !this._calculationDependsOn(candidate.id, calculation.id, config))
+      .map((candidate) => {
+        const value = `calculation:${candidate.id}`;
+        return `<option value="${this._esc(value)}" ${value === selected ? "selected" : ""}>${this._esc(candidate.name)}</option>`;
+      }).join("");
+    const entityOptions = this._entityList(meta.entityKind)
       .map((state) => {
         const value = `entity:${state.entity_id}`;
         const unit = state.attributes?.unit_of_measurement ? ` · ${state.attributes.unit_of_measurement}` : "";
         return `<option value="${this._esc(value)}" ${value === selected ? "selected" : ""}>${this._esc(this._friendly(state.entity_id))} · ${this._esc(state.entity_id)}${this._esc(unit)}</option>`;
       }).join("");
-    return `<option value="">— Messwert auswählen —</option><optgroup label="BEREICHSWERTE">${areaOptions}</optgroup><optgroup label="HOME ASSISTANT ENTITIES">${entityOptions}</optgroup>`;
+    return `<option value="">— Messwert auswählen —</option><optgroup label="BEREICHSWERTE">${areaOptions}</optgroup><optgroup label="BERECHNETE MESSWERTE">${calculationOptions}</optgroup><optgroup label="HOME ASSISTANT ENTITIES">${entityOptions}</optgroup>`;
   }
+
+  _measureSourceOptions(kind, currentAreaId, term, config = this._draft || this._config) {
+    const pseudoCalculation = { id: `area_${currentAreaId}_${kind}`, kind };
+    return this._calculationSourceOptions(pseudoCalculation, term, config);
+  }
+
   _parseMeasureSource(value) {
     const raw = String(value || "");
     const index = raw.indexOf(":");
-    if (index <= 0) return { source_type: "area", source_id: "" };
+    if (index <= 0) return { source_type: "entity", source_id: "" };
     const sourceType = raw.slice(0, index);
     return {
-      source_type: sourceType === "entity" ? "entity" : "area",
+      source_type: ["entity", "area", "calculation"].includes(sourceType) ? sourceType : "entity",
       source_id: raw.slice(index + 1),
     };
   }
 
-  _measureTermValue(term, kind, config = this._config, stack = new Set()) {
-    if (!term?.source_id) return null;
-    const isEnergy = kind === "energy" || kind === "thermal_energy";
-    if (term.source_type === "entity") {
-      return isEnergy ? this._dailyEnergyKWh(term.source_id) : this._powerW(term.source_id);
+  _sourceValue(sourceType, sourceId, kind, config = this._config, stack = new Set()) {
+    if (!sourceId) return null;
+    const meta = this._kindMeta(kind);
+    if (sourceType === "entity") return meta.energy ? this._dailyEnergyKWh(sourceId) : this._powerW(sourceId);
+    if (sourceType === "calculation") return this._calculationValue(sourceId, config, stack);
+    if (sourceType === "area") {
+      const sourceArea = this._areaById(sourceId, config);
+      if (kind === "thermal_energy") return this._areaThermalTodayEnergy(sourceArea, config, new Set(stack));
+      if (kind === "thermal_power") return this._areaThermalPower(sourceArea, config, new Set(stack));
+      if (kind === "energy") return this._areaTodayEnergy(sourceArea, config, new Set(stack));
+      return this._areaPower(sourceArea, config, new Set(stack));
     }
-    const sourceArea = this._areaById(term.source_id, config);
-    if (kind === "thermal_energy") return this._areaThermalTodayEnergy(sourceArea, config, new Set(stack));
-    if (kind === "thermal_power") return this._areaThermalPower(sourceArea, config, new Set(stack));
-    if (kind === "energy") return this._areaTodayEnergy(sourceArea, config, new Set(stack));
-    return this._areaPower(sourceArea, config, new Set(stack));
+    return null;
   }
+
+  _calculationValue(calculationId, config = this._config, stack = new Set()) {
+    if (!calculationId) return null;
+    if (config === this._config && Object.prototype.hasOwnProperty.call(this._calculationValues, calculationId)) {
+      const value = Number(this._calculationValues[calculationId]?.value);
+      return Number.isFinite(value) ? value : null;
+    }
+    const key = `calc:${calculationId}`;
+    if (stack.has(key)) return null;
+    const calculation = this._calculationById(calculationId, config);
+    if (!calculation || !(calculation.terms || []).length) return null;
+    stack = new Set(stack);
+    stack.add(key);
+    let total = 0;
+    for (const term of calculation.terms || []) {
+      const value = this._sourceValue(term.source_type, term.source_id, calculation.kind, config, new Set(stack));
+      if (value === null || !Number.isFinite(value)) return null;
+      total += term.op === "-" ? -value : value;
+    }
+    return total;
+  }
+
+  _measureTermValue(term, kind, config = this._config, stack = new Set()) {
+    return this._sourceValue(term?.source_type || "area", term?.source_id || "", kind, config, stack);
+  }
+
   _areaCalculatedValue(area, kind, config = this._config, stack = new Set()) {
-    if (!area || stack.has(area.id)) return null;
+    if (!area || stack.has(`legacy:${area.id}:${kind}`)) return null;
     const terms = this._calculationTerms(area, kind);
     if (!terms.length) return null;
-    stack.add(area.id);
+    stack = new Set(stack);
+    stack.add(`legacy:${area.id}:${kind}`);
     let result = 0;
     for (const term of terms) {
       const value = this._measureTermValue(term, kind, config, new Set(stack));
@@ -836,50 +969,51 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return result;
   }
 
-  _areaPower(area, config = this._config, stack = new Set()) {
-    if (!area || stack.has(area.id)) return null;
-    if (area.mode !== "calculated") return this._powerW(area.power_entity);
-    return this._areaCalculatedValue(area, "power", config, stack);
+  _areaMeasureValue(area, kind, config = this._config, stack = new Set()) {
+    if (!area) return null;
+    const key = `area:${area.id}:${kind}`;
+    if (stack.has(key)) return null;
+    stack = new Set(stack);
+    stack.add(key);
+    const typeField = `${kind}_source_type`;
+    const idField = `${kind}_source_id`;
+    const sourceType = area[typeField] || "";
+    const sourceId = area[idField] || "";
+    if (["entity", "calculation"].includes(sourceType) && sourceId) return this._sourceValue(sourceType, sourceId, kind, config, stack);
+
+    // Backwards compatibility for configs that have not yet been re-saved in V0.4.
+    if (area.mode === "calculated") return this._areaCalculatedValue(area, kind, config, stack);
+    const entityMap = { power: "power_entity", energy: "energy_entity", thermal_power: "thermal_power_entity", thermal_energy: "thermal_energy_entity" };
+    const entityId = area[entityMap[kind] || "power_entity"];
+    return entityId ? this._sourceValue("entity", entityId, kind, config, stack) : null;
   }
 
-  _areaThermalPower(area, config = this._config, stack = new Set()) {
-    if (!area || stack.has(area.id)) return null;
-    if (area.mode !== "calculated") return this._powerW(area.thermal_power_entity);
-    return this._areaCalculatedValue(area, "thermal_power", config, stack);
-  }
-  _areaTodayEnergy(area, config = this._config, stack = new Set()) {
-    if (!area || stack.has(area.id)) return null;
-    if (area.mode !== "calculated") return this._dailyEnergyKWh(area.energy_entity);
-    return this._areaCalculatedValue(area, "energy", config, stack);
-  }
+  _areaPower(area, config = this._config, stack = new Set()) { return this._areaMeasureValue(area, "power", config, stack); }
+  _areaThermalPower(area, config = this._config, stack = new Set()) { return this._areaMeasureValue(area, "thermal_power", config, stack); }
+  _areaTodayEnergy(area, config = this._config, stack = new Set()) { return this._areaMeasureValue(area, "energy", config, stack); }
+  _areaThermalTodayEnergy(area, config = this._config, stack = new Set()) { return this._areaMeasureValue(area, "thermal_energy", config, stack); }
 
-  _areaThermalTodayEnergy(area, config = this._config, stack = new Set()) {
-    if (!area || stack.has(area.id)) return null;
-    if (area.mode !== "calculated") return this._dailyEnergyKWh(area.thermal_energy_entity);
-    return this._areaCalculatedValue(area, "thermal_energy", config, stack);
-  }
   _measureTermLabel(term, kind, config = this._config) {
     if (!term?.source_id) return "?";
     if (term.source_type === "entity") return this._friendly(term.source_id);
+    if (term.source_type === "calculation") return this._calculationById(term.source_id, config)?.name || "?";
     const area = this._areaById(term.source_id, config);
     const suffix = kind === "energy" ? " · HEUTE" : kind === "thermal_power" ? " · THERMISCH" : kind === "thermal_energy" ? " · THERMISCH HEUTE" : "";
     return `${area?.name || "?"}${suffix}`;
   }
+
   _areaFormula(area, config = this._config, kind = "power") {
-    if (!area || area.mode !== "calculated") {
-      const entityMap = {
-        power: "power_entity",
-        energy: "energy_entity",
-        thermal_power: "thermal_power_entity",
-        thermal_energy: "thermal_energy_entity",
-      };
-      const entityId = area?.[entityMap[kind] || "power_entity"];
-      return entityId ? `DIREKT · ${this._friendly(entityId)}` : "NICHT KONFIGURIERT";
-    }
+    if (!area) return "NICHT KONFIGURIERT";
+    const sourceType = area[`${kind}_source_type`] || "";
+    const sourceId = area[`${kind}_source_id`] || "";
+    if (sourceType === "entity" && sourceId) return `DIREKT · ${this._friendly(sourceId)}`;
+    if (sourceType === "calculation" && sourceId) return `BERECHNET · ${this._calculationById(sourceId, config)?.name || sourceId}`;
+    if (area.mode !== "calculated") return "NICHT KONFIGURIERT";
     const terms = this._calculationTerms(area, kind);
     if (!terms.length) return kind.includes("energy") ? "ENERGIE-BERECHNUNG FEHLT" : "LEISTUNGS-BERECHNUNG FEHLT";
     return terms.map((term, index) => `${index === 0 && term.op !== "-" ? "" : term.op === "-" ? "− " : "+ "}${this._measureTermLabel(term, kind, config)}`).join(" ");
   }
+
   _isVisualRoot(area, config = this._config) {
     if (!area || area.id === "house") return false;
     if (!area.parent_id || area.parent_id === "house") return true;
@@ -1005,12 +1139,14 @@ class EnergySystemDashboardPanel extends HTMLElement {
           ${this._tabButton("system", "SYSTEM")}
           ${this._tabButton("electric", "ELEKTRISCH")}
           ${this._tabButton("thermal", "THERMISCH")}
+          ${admin ? this._tabButton("calculations", "BERECHNUNGEN") : ""}
           ${admin ? this._tabButton("config", "KONFIGURATION") : ""}
         </nav>
         <section class="content">
           ${this._tab === "system" ? this._renderSystem() : ""}
           ${this._tab === "electric" ? this._renderElectric() : ""}
           ${this._tab === "thermal" ? this._renderThermal() : ""}
+          ${this._tab === "calculations" ? this._renderCalculations() : ""}
           ${this._tab === "config" ? this._renderConfig() : ""}
         </section>
       </main>`;
@@ -1339,8 +1475,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const attrs = interactive ? `type="button" data-action="select-area" data-area-id="${this._esc(house.id)}"` : "";
     const power = this._areaPower(house, config);
     const today = this._areaTodayEnergy(house, config);
-    return `<${tag} class="area-tile house-tile ${house.mode === "calculated" ? "calculated" : "measured"} ${selected ? "selected" : ""}" ${attrs}>
-      <div class="area-tile-head"><span>${house.mode === "calculated" ? "C" : "M"}</span><strong>${this._esc(house.name || "Haus")}</strong></div>
+    return `<${tag} class="area-tile house-tile ${this._areaUsesCalculation(house) ? "calculated" : "measured"} ${selected ? "selected" : ""}" ${attrs}>
+      <div class="area-tile-head"><span>${this._areaUsesCalculation(house) ? "C" : "M"}</span><strong>${this._esc(house.name || "Haus")}</strong></div>
       <div class="house-values"><div><span>AKTUELL</span><strong>${this._formatPowerW(power)}</strong></div><div class="daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div><div><span>LOGIK</span><strong>${this._esc(this._areaFormula(house, config))}</strong></div></div>
     </${tag}>`;
   }
@@ -1373,14 +1509,83 @@ class EnergySystemDashboardPanel extends HTMLElement {
       ? `<div class="area-hierarchy-meta"><span>PARENT</span><strong>${children.length} UNTERBEREICH${children.length === 1 ? "" : "E"}</strong></div>`
       : parent ? `<div class="area-parent-ref">↳ ${this._esc(parent.name)}</div>` : "";
     const formulaKind = kind === "thermal" ? "thermal_power" : "power";
-    return `<${tag} class="area-tile ${kind === "thermal" ? "thermal-area" : "electric-area"} ${area.mode === "calculated" ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs}>
-      <div class="area-tile-head"><span>${area.mode === "calculated" ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
+    return `<${tag} class="area-tile ${kind === "thermal" ? "thermal-area" : "electric-area"} ${this._areaUsesCalculation(area) ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs}>
+      <div class="area-tile-head"><span>${this._areaUsesCalculation(area) ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
       ${relation}
       <div class="area-tile-power">${this._formatPowerW(power)}</div>
       <div class="area-tile-energy daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>
       <div class="area-tile-formula">${this._esc(this._areaFormula(area, config, formulaKind))}</div>
     </${tag}>`;
   }
+  _formatKindValue(kind, value) {
+    return this._kindMeta(kind).energy ? this._formatEnergyKWh(value) : this._formatPowerW(value);
+  }
+
+  _calculationTermPreview(term, kind, config = this._draft || this._config) {
+    const value = this._sourceValue(term?.source_type || "entity", term?.source_id || "", kind, config, new Set());
+    return { value, formatted: this._formatKindValue(kind, value), label: this._measureTermLabel(term, kind, config) };
+  }
+
+  _renderCalculations() {
+    if (!this._draft) this._draft = this._clone(this._config);
+    if (!this._hass?.user?.is_admin) return this._empty("Berechnungen sind nur für Administratoren verfügbar.");
+    const calculations = this._draft.calculations || [];
+    if (!calculations.some((calculation) => calculation.id === this._selectedCalculationId)) this._selectedCalculationId = calculations[0]?.id || null;
+    const selected = this._calculationById(this._selectedCalculationId, this._draft);
+    return `<div class="calculations-toolbar"><div><span>MESSWERT ENGINE</span><strong>BERECHNUNGEN SIND UNABHÄNGIG VOM GEBÄUDEPLAN UND KÖNNEN ALS HA SENSOR BEREITGESTELLT WERDEN.</strong></div><button class="primary" data-action="save-config" ${this._saving ? "disabled" : ""}>${this._saving ? "SPEICHERT …" : "BERECHNUNGEN SPEICHERN"}</button></div>
+      <div class="calculations-editor">
+        <aside class="calculation-list">
+          <div class="calculation-list-head"><span>BERECHNETE MESSWERTE</span><strong>${calculations.length}</strong></div>
+          <div class="calculation-list-items">${calculations.map((calculation) => {
+            const value = this._calculationValue(calculation.id, this._draft);
+            return `<button type="button" class="calculation-list-item ${calculation.id === this._selectedCalculationId ? "selected" : ""}" data-action="select-calculation" data-calculation-id="${this._esc(calculation.id)}"><span>${this._esc(this._kindMeta(calculation.kind).short)}</span><strong>${this._esc(calculation.name)}</strong><em>${this._formatKindValue(calculation.kind, value)}</em>${calculation.expose_entity ? `<small>HA SENSOR</small>` : ""}</button>`;
+          }).join("") || `<div class="config-empty">NOCH KEINE BERECHNETEN MESSWERTE</div>`}</div>
+          <button class="calculation-add" type="button" data-action="add-calculation">+ NEUER MESSWERT</button>
+        </aside>
+        <section class="calculation-workbench">${selected ? this._renderCalculationEditor(selected, this._draft) : `<div class="calculation-empty"><strong>KEINE BERECHNUNG AUSGEWÄHLT</strong><span>Lege links einen neuen Messwert an.</span></div>`}</section>
+      </div>`;
+  }
+
+  _renderCalculationEditor(calculation, config) {
+    const value = this._calculationValue(calculation.id, config);
+    const snapshot = this._calculationValues[calculation.id] || {};
+    const terms = calculation.terms || [];
+    const meta = this._kindMeta(calculation.kind);
+    const entityText = calculation.expose_entity ? (snapshot.entity_id || "WIRD NACH DEM SPEICHERN ERSTELLT") : "NICHT BEREITGESTELLT";
+    return `<div class="calculation-head"><div><span>CALCULATION / ${this._esc(calculation.id)}</span><input data-calculation-id="${this._esc(calculation.id)}" data-calculation-field="name" value="${this._esc(calculation.name)}"></div><button class="danger" data-action="remove-calculation" data-calculation-id="${this._esc(calculation.id)}">REMOVE</button></div>
+      <div class="calculation-meta-grid">
+        ${this._field("Messgröße", `<select data-calculation-id="${this._esc(calculation.id)}" data-calculation-field="kind"><option value="power" ${calculation.kind === "power" ? "selected" : ""}>Elektrische Leistung</option><option value="energy" ${calculation.kind === "energy" ? "selected" : ""}>Energie heute</option><option value="thermal_power" ${calculation.kind === "thermal_power" ? "selected" : ""}>Thermische Leistung</option><option value="thermal_energy" ${calculation.kind === "thermal_energy" ? "selected" : ""}>Thermische Energie heute</option></select>`)}
+        <label class="check-row entity-toggle"><input type="checkbox" data-calculation-id="${this._esc(calculation.id)}" data-calculation-field="expose_entity" ${calculation.expose_entity ? "checked" : ""}><span>ALS HOME ASSISTANT SENSOR BEREITSTELLEN</span></label>
+      </div>
+      <div class="calculation-entity-strip"><span>HOME ASSISTANT ENTITÄT</span><strong>${this._esc(entityText)}</strong></div>
+      <div class="calculation-signal-editor">
+        <div class="calculation-signal-head"><span>OP</span><span>QUELLE / MESSWERT</span><span>LIVE</span><span></span></div>
+        ${terms.map((term, index) => { const preview = this._calculationTermPreview(term, calculation.kind, config); return `<div class="calculation-signal-row"><select data-calculation-id="${this._esc(calculation.id)}" data-calculation-term-index="${index}" data-calculation-term-field="op"><option value="+" ${term.op !== "-" ? "selected" : ""}>+</option><option value="-" ${term.op === "-" ? "selected" : ""}>−</option></select><select data-calculation-id="${this._esc(calculation.id)}" data-calculation-term-index="${index}" data-calculation-term-field="source">${this._calculationSourceOptions(calculation, term, config)}</select><strong>${preview.formatted}</strong><button class="danger" data-action="remove-calculation-term" data-calculation-id="${this._esc(calculation.id)}" data-index="${index}">×</button></div>`; }).join("")}
+        <button class="small-action calculation-term-add" type="button" data-action="add-calculation-term" data-calculation-id="${this._esc(calculation.id)}">+ MESSWERT</button>
+      </div>
+      <div class="calculation-live">
+        <div class="calculation-live-title"><span>LIVE-BERECHNUNG</span><strong>${meta.label}</strong></div>
+        <div class="calculation-breakdown">${terms.length ? terms.map((term, index) => { const preview = this._calculationTermPreview(term, calculation.kind, config); const operator = index === 0 && term.op !== "-" ? "+" : term.op === "-" ? "−" : "+"; return `<div><b>${operator}</b><strong>${preview.formatted}</strong><span>${this._esc(preview.label)}</span></div>`; }).join("") : `<div class="calculation-no-terms">NOCH KEINE MESSWERTE</div>`}</div>
+        <div class="calculation-result"><span>ERGEBNIS</span><strong>${this._formatKindValue(calculation.kind, value)}</strong><small>${value === null ? "BERECHNUNG NICHT VERFÜGBAR" : this._esc(calculation.name)}</small></div>
+      </div>`;
+  }
+
+  _renderAreaMeasurementSource(area, kind, config) {
+    const meta = this._kindMeta(kind);
+    const typeField = `${kind}_source_type`;
+    const idField = `${kind}_source_id`;
+    const sourceType = area[typeField] || "";
+    const sourceId = area[idField] || "";
+    const value = this._areaMeasureValue(area, kind, config);
+    const calculationOptions = (config?.calculations || []).filter((calculation) => calculation.kind === kind).map((calculation) => `<option value="${this._esc(calculation.id)}" ${sourceId === calculation.id ? "selected" : ""}>${this._esc(calculation.name)}${this._calculationValues[calculation.id]?.entity_id ? ` · ${this._esc(this._calculationValues[calculation.id].entity_id)}` : ""}</option>`).join("");
+    const sourceControl = sourceType === "entity"
+      ? `<select data-area-id="${this._esc(area.id)}" data-area-source-kind="${kind}" data-area-source-field="id">${this._entityOptions(meta.entityKind, sourceId)}</select>`
+      : sourceType === "calculation"
+        ? `<select data-area-id="${this._esc(area.id)}" data-area-source-kind="${kind}" data-area-source-field="id"><option value="">— berechneten Messwert auswählen —</option>${calculationOptions}</select>`
+        : `<div class="measurement-source-empty">KEINE QUELLE AUSGEWÄHLT</div>`;
+    return `<div class="measurement-source ${meta.thermal ? "thermal-source" : ""}"><div class="measurement-source-head"><span>${meta.label}</span><strong>${this._formatKindValue(kind, value)}</strong></div><select data-area-id="${this._esc(area.id)}" data-area-source-kind="${kind}" data-area-source-field="type"><option value="" ${!sourceType ? "selected" : ""}>Nicht konfiguriert</option><option value="entity" ${sourceType === "entity" ? "selected" : ""}>Home Assistant Entity</option><option value="calculation" ${sourceType === "calculation" ? "selected" : ""}>Berechneter Messwert</option></select>${sourceControl}<small>${this._esc(this._areaFormula(area, config, kind))}</small></div>`;
+  }
+
   _renderConfig() {
     if (!this._draft) this._draft = this._clone(this._config);
     const d = this._draft;
@@ -1547,7 +1752,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       <div class="inspector-label">HIERARCHIE / PARENT & CHILD</div>
       ${parentField}
       <div class="hierarchy-subhead"><span>UNTERBEREICHE</span><strong>${children.length}</strong></div>
-      <div class="child-list">${children.map((child) => `<button type="button" data-action="select-area" data-area-id="${this._esc(child.id)}"><b>${child.mode === "calculated" ? "C" : "M"}</b><span><strong>${this._esc(child.name)}</strong><small>↳ ${this._esc(area.name || "Parent")}</small></span><em>${this._isConfiguredArea(child, d) ? "KONFIGURIERT" : "OFFEN"}</em></button>`).join("") || `<div class="child-empty">KEINE UNTERBEREICHE</div>`}</div>
+      <div class="child-list">${children.map((child) => `<button type="button" data-action="select-area" data-area-id="${this._esc(child.id)}"><b>${this._areaUsesCalculation(child) ? "C" : "M"}</b><span><strong>${this._esc(child.name)}</strong><small>↳ ${this._esc(area.name || "Parent")}</small></span><em>${this._isConfiguredArea(child, d) ? "KONFIGURIERT" : "OFFEN"}</em></button>`).join("") || `<div class="child-empty">KEINE UNTERBEREICHE</div>`}</div>
       ${children.length ? `<div class="child-open"><span>UNTERBEREICH ÖFFNEN</span><div><select data-child-open-select="${this._esc(area.id)}">${this._directChildOptions(area.id, d)}</select><button type="button" data-action="open-child" data-area-id="${this._esc(area.id)}">ÖFFNEN</button></div></div>` : ""}
       <button class="small-action" type="button" data-action="add-child" data-area-id="${this._esc(area.id)}">+ UNTERBEREICH</button>
       <div class="child-assign-label">BESTEHENDEN BEREICH ALS UNTERBEREICH ZUORDNEN</div>
@@ -1559,16 +1764,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const isHouse = area.id === "house";
     const layout = this._effectiveLayout(area, d);
     const levelOptions = this._floorSelectOptions(area, d);
-    const calculation = area.mode === "calculated"
-      ? `${this._renderMeasureCalculation(area, "power", d)}${this._renderMeasureCalculation(area, "energy", d)}${this._renderMeasureCalculation(area, "thermal_power", d)}${this._renderMeasureCalculation(area, "thermal_energy", d)}`
-      : `<div class="inspector-section measure-section"><div class="inspector-label">ELEKTRISCHE MESSWERTE</div>${this._field("Aktuelle Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>`)}${this._field("Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>`)}</div><div class="inspector-section measure-section thermal-calculation"><div class="inspector-label">THERMISCHE MESSWERTE</div>${this._field("Thermische Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="thermal_power_entity">${this._entityOptions("power", area.thermal_power_entity)}</select>`)}${this._field("Thermischer Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="thermal_energy_entity">${this._entityOptions("energy", area.thermal_energy_entity)}</select>`)}</div>`;
     return `
-      <div class="inspector-head"><span>${isHouse ? "ROOT / HOUSE" : area.mode === "calculated" ? "C / CALCULATED" : "M / MEASURED"}</span><button class="danger" data-action="remove-area" data-area-id="${this._esc(area.id)}" ${isHouse || (d.areas || []).length <= 1 ? "disabled" : ""}>REMOVE</button></div>
+      <div class="inspector-head"><span>${isHouse ? "ROOT / HOUSE" : this._areaUsesCalculation(area) ? "C / CALCULATED SOURCE" : "M / MEASURED SOURCE"}</span><button class="danger" data-action="remove-area" data-area-id="${this._esc(area.id)}" ${isHouse || (d.areas || []).length <= 1 ? "disabled" : ""}>REMOVE</button></div>
       ${this._field("Bereichsname", `<input data-area-id="${this._esc(area.id)}" data-area-field="name" value="${this._esc(area.name)}">`)}
       ${!isHouse ? (() => { const hierarchyParent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, d) : null; return hierarchyParent ? `<div class="root-note child-floor-note">STOCKWERK WIRD VOM PARENT <strong>${this._esc(hierarchyParent.name)}</strong> ÜBERNOMMEN · ${this._esc(this._levelById(hierarchyParent.level_id, d)?.name || "—")}</div>` : this._field("Stockwerk", `<select data-area-id="${this._esc(area.id)}" data-area-field="level_id">${levelOptions}</select><div class="custom-floor-add"><input data-custom-floor-name="${this._esc(area.id)}" placeholder="Eigenes Stockwerk, z. B. Galerie"><button type="button" data-action="assign-custom-floor" data-area-id="${this._esc(area.id)}">HINZUFÜGEN</button></div>`); })() : `<div class="root-note">HAUS IST STOCKWERKÜBERGREIFEND UND IMMER ÜBER DIE VOLLE BREITE ANGEORDNET.</div>`}
       ${this._renderHierarchyEditor(area, d)}
-      ${this._field("Datentyp", `<select data-area-id="${this._esc(area.id)}" data-area-field="mode"><option value="measured" ${area.mode !== "calculated" ? "selected" : ""}>Gemessen</option><option value="calculated" ${area.mode === "calculated" ? "selected" : ""}>Berechnet</option></select>`)}
-      ${calculation}
+      <div class="inspector-section source-section"><div class="inspector-label">MESSWERTQUELLEN</div>${this._renderAreaMeasurementSource(area, "power", d)}${this._renderAreaMeasurementSource(area, "energy", d)}${this._renderAreaMeasurementSource(area, "thermal_power", d)}${this._renderAreaMeasurementSource(area, "thermal_energy", d)}</div>
       ${!isHouse ? `<div class="inspector-section"><div class="inspector-label">LAYOUT / ${this._layoutMode(area).toUpperCase()}</div><div class="layout-mode-status"><span>${this._layoutMode(area) === "docked" ? "MAGNETISCH ANGEDOCKT" : "FREI POSITIONIERT"}</span><strong>${this._layoutMode(area) === "docked" ? `REIHENFOLGE ${Number(area.dock_order || 0) + 1}` : `X ${layout.x} · Y ${layout.y}`}</strong></div><div class="layout-position compact-size">
         ${["w", "h"].map((key) => `<label><span>${key === "w" ? "BREITE" : "HÖHE"}</span><select data-area-id="${this._esc(area.id)}" data-layout-field="${key}">${Array.from({ length: key === "w" ? 6 : 4 }, (_, index) => index + 1).map((value) => `<option value="${value}" ${Number(layout[key] || 1) === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>`).join("")}
       </div><button class="small-action" type="button" data-action="toggle-layout-mode" data-area-id="${this._esc(area.id)}">${this._layoutMode(area) === "docked" ? "KACHEL FREI LÖSEN" : "KACHEL ANDOCKEN"}</button></div>` : ""}`;
@@ -1588,7 +1789,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
     if (action === "set-tab") {
       this._tab = button.dataset.tab;
-      if (this._tab === "config") {
+      if (["config", "calculations"].includes(this._tab)) {
         this._draft = this._clone(this._config);
         this._syncLayoutState(this._draft);
       }
@@ -1638,6 +1839,53 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
 
+    if (action === "add-calculation") {
+      const calculation = { id: this._id("calc"), name: "Neuer berechneter Messwert", kind: "power", terms: [], expose_entity: false };
+      this._draft.calculations = [...(this._draft.calculations || []), calculation];
+      this._selectedCalculationId = calculation.id;
+      this._saveNotice = "";
+      this._render();
+      return;
+    }
+    if (action === "select-calculation") {
+      this._selectedCalculationId = button.dataset.calculationId;
+      this._render();
+      return;
+    }
+    if (action === "add-calculation-term") {
+      const calculation = this._calculationById(button.dataset.calculationId, this._draft);
+      if (calculation) {
+        calculation.terms = [...(calculation.terms || []), { op: "+", source_type: "entity", source_id: "" }];
+        this._saveNotice = "";
+      }
+      this._render();
+      return;
+    }
+    if (action === "remove-calculation-term") {
+      const calculation = this._calculationById(button.dataset.calculationId, this._draft);
+      if (calculation) calculation.terms.splice(Number(button.dataset.index), 1);
+      this._saveNotice = "";
+      this._render();
+      return;
+    }
+    if (action === "remove-calculation") {
+      const calculationId = button.dataset.calculationId;
+      this._draft.calculations = (this._draft.calculations || []).filter((calculation) => calculation.id !== calculationId);
+      for (const area of this._draft.areas || []) {
+        for (const kind of ["power", "energy", "thermal_power", "thermal_energy"]) {
+          if (area[`${kind}_source_type`] === "calculation" && area[`${kind}_source_id`] === calculationId) {
+            area[`${kind}_source_type`] = "";
+            area[`${kind}_source_id`] = "";
+          }
+        }
+      }
+      for (const calculation of this._draft.calculations || []) calculation.terms = (calculation.terms || []).filter((term) => !(term.source_type === "calculation" && term.source_id === calculationId));
+      this._selectedCalculationId = this._draft.calculations?.[0]?.id || null;
+      this._saveNotice = "";
+      this._render();
+      return;
+    }
+
     if (action === "add-generation") {
       this._draft.generation.push({ id: this._id("gen"), type: "solar", name: "PV", power_entity: "", energy_entity: "" });
       this._render();
@@ -1659,7 +1907,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       const defaultLevel = selectedLevel || this._ensureFloor("EG", this._draft) || this._draft.levels?.[0];
       const levelId = defaultLevel?.id;
       const layout = { x: 1, y: 1, w: 3, h: 2 };
-      const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, parent_id: "house", mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout, layout_mode: "docked", dock_order: this._visualRootAreas(levelId, this._draft).length };
+      const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, parent_id: "house", mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", power_source_type: "", power_source_id: "", energy_source_type: "", energy_source_id: "", thermal_power_source_type: "", thermal_power_source_id: "", thermal_energy_source_type: "", thermal_energy_source_id: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout, layout_mode: "docked", dock_order: this._visualRootAreas(levelId, this._draft).length };
       this._draft.areas.push(area);
       this._layoutLevelId = levelId;
       this._selectedAreaId = area.id;
@@ -1719,7 +1967,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       if (!parent) return;
       const level = parent.id === "house" ? (this._ensureFloor("EG", this._draft) || this._draft.levels?.[0]) : this._levelById(parent.level_id, this._draft);
       const levelId = level?.id || this._draft.levels?.[0]?.id;
-      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout: { x: 1, y: 1, w: 2, h: 1 }, layout_mode: "docked", dock_order: this._sameLevelChildren(parent.id, levelId, this._draft).length };
+      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", power_source_type: "", power_source_id: "", energy_source_type: "", energy_source_id: "", thermal_power_source_type: "", thermal_power_source_id: "", thermal_energy_source_type: "", thermal_energy_source_id: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout: { x: 1, y: 1, w: 2, h: 1 }, layout_mode: "docked", dock_order: this._sameLevelChildren(parent.id, levelId, this._draft).length };
       this._draft.areas.push(area);
       this._selectedAreaId = area.id;
       this._layoutLevelId = levelId;
@@ -1850,9 +2098,47 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
 
+    if (target.dataset.calculationId) {
+      const calculation = this._calculationById(target.dataset.calculationId, this._draft);
+      if (!calculation) return;
+      if (target.dataset.calculationTermIndex !== undefined) {
+        const term = calculation.terms?.[Number(target.dataset.calculationTermIndex)];
+        if (!term) return;
+        if (target.dataset.calculationTermField === "op") term.op = target.value === "-" ? "-" : "+";
+        if (target.dataset.calculationTermField === "source") Object.assign(term, this._parseMeasureSource(target.value));
+        this._render();
+        if (calculation.kind.includes("energy") && target.dataset.calculationTermField === "source") this._refreshDailyEnergy(this._draft);
+        return;
+      }
+      if (target.dataset.calculationField) {
+        const field = target.dataset.calculationField;
+        const previousKind = calculation.kind;
+        calculation[field] = target.type === "checkbox" ? target.checked : target.value;
+        if (field === "kind" && calculation.kind !== previousKind) calculation.terms = [];
+        this._saveNotice = "";
+        this._render();
+        return;
+      }
+    }
+
     if (target.dataset.areaId) {
       const area = this._areaById(target.dataset.areaId, this._draft);
       if (!area) return;
+      if (target.dataset.areaSourceKind && target.dataset.areaSourceField) {
+        const kind = target.dataset.areaSourceKind;
+        const typeField = `${kind}_source_type`;
+        const idField = `${kind}_source_id`;
+        if (target.dataset.areaSourceField === "type") {
+          area[typeField] = target.value;
+          area[idField] = "";
+        } else {
+          area[idField] = target.value;
+        }
+        this._saveNotice = "";
+        this._render();
+        if (kind.includes("energy")) this._refreshDailyEnergy(this._draft);
+        return;
+      }
       if (target.dataset.layoutField) {
         const desired = { ...area.layout, [target.dataset.layoutField]: Number(target.value) };
         area.layout = this._layoutMode(area) === "free" ? this._findFreeLayout(area, desired, this._draft) : this._clampLayout(desired);
@@ -2045,11 +2331,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         * { box-sizing: border-box; }
         button, input, select { font: inherit; }
         button { cursor: pointer; }
-        .shell { min-height: 100vh; padding: 28px 34px 54px; background:
-          linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px), var(--bg);
-          background-size: 28px 28px;
-        }
+        .shell { min-height:100vh; padding:28px 34px 54px; background:var(--bg); }
         .topbar { display:flex; align-items:flex-end; justify-content:space-between; border-bottom:1px solid var(--line); padding-bottom:18px; gap:20px; }
         .eyebrow, .system-note, .section-label { color:var(--muted); font-size:11px; letter-spacing:.16em; font-weight:700; }
         h1 { margin:5px 0 0; font-size:28px; letter-spacing:.055em; font-weight:650; }
@@ -2186,7 +2468,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .floor-indicator .floor-load { min-width:0; min-height:0; border:0; color:var(--active); font:800 9px/1 ui-monospace,monospace; white-space:nowrap; }
         .floor-indicator small { color:var(--muted); font:700 7px/1.15 ui-monospace,monospace; text-align:center; }
         .flow-thermal .floor-indicator .floor-load { color:var(--thermal); }
-        .floor-layout-body { min-width:0; min-height:0; display:flex; flex-direction:column; }
+        .floor-layout-body { min-width:0; min-height:0; display:flex; flex-direction:column; background:#12161a; }
         .floor-layout-meta { min-height:38px; flex:0 0 38px; display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:0 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
         .floor-layout-meta span, .floor-layout-meta em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
         .floor-layout-meta strong { font-size:11px; letter-spacing:.06em; }
@@ -2200,8 +2482,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .level-head { min-height:42px; display:grid; grid-template-columns:90px 1fr auto; gap:12px; align-items:center; padding:0 14px; border-bottom:1px solid var(--line); }
         .level-head span, .level-head em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
         .level-head strong { font-size:12px; letter-spacing:.06em; }
-        .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); align-content:center; gap:0; padding:0; min-height:calc(var(--rows) * 42px); background-image:linear-gradient(to right,rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; overflow:hidden; }
-        .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),48px); min-height:calc(var(--rows) * 48px); background-size:calc(100% / 12) 100%,100% 48px; }
+        .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); align-content:center; gap:0; padding:20px 0; min-height:calc(var(--rows) * 42px + 40px); background-color:#12161a; background-image:linear-gradient(to right,rgba(255,255,255,.034) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.034) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; background-position:0 0,0 20px; overflow:hidden; }
+        .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),48px); min-height:calc(var(--rows) * 48px + 40px); background-size:calc(100% / 12) 100%,100% 48px; background-position:0 0,0 20px; }
         .overview-floor-group .level-grid { flex:1 1 auto; }
         .area-group { min-width:0; min-height:0; display:flex; flex-direction:column; align-self:stretch; position:relative; z-index:1; overflow:visible; box-sizing:border-box; }
         .root-area-group { margin:0; }
@@ -2289,6 +2571,69 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .measure-preview span { color:var(--muted); font:700 9px/1 ui-monospace,monospace; letter-spacing:.08em; }
         .measure-preview strong { font:700 16px/1 ui-monospace,monospace; }
         .measure-preview small { grid-column:1 / -1; color:var(--muted); font:600 8px/1.4 ui-monospace,monospace; overflow-wrap:anywhere; }
+        .calculations-toolbar { min-height:62px; display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:14px; padding:12px 16px; border:1px solid var(--line); background:var(--panel); }
+        .calculations-toolbar > div { display:flex; flex-direction:column; gap:6px; min-width:0; }
+        .calculations-toolbar span { color:var(--muted); font:800 9px/1 ui-monospace,monospace; letter-spacing:.14em; }
+        .calculations-toolbar strong { font:650 11px/1.4 ui-monospace,monospace; letter-spacing:.035em; }
+        .calculations-editor { min-height:690px; display:grid; grid-template-columns:minmax(250px,320px) minmax(0,1fr); border:1px solid var(--line); background:var(--panel); }
+        .calculation-list { min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line-strong); background:#0d1013; }
+        .calculation-list-head { min-height:48px; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:0 12px; border-bottom:1px solid var(--line); }
+        .calculation-list-head span { color:var(--muted); font:800 9px/1 ui-monospace,monospace; letter-spacing:.12em; }
+        .calculation-list-head strong { min-width:28px; min-height:28px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace,monospace; }
+        .calculation-list-items { flex:1 1 auto; overflow:auto; }
+        .calculation-list-item { width:100%; min-height:70px; display:grid; grid-template-columns:58px minmax(0,1fr) auto; grid-template-rows:auto auto; align-items:center; gap:6px 10px; padding:10px 12px; border:0; border-bottom:1px solid var(--line); border-left:3px solid transparent; background:transparent; color:var(--text); text-align:left; }
+        .calculation-list-item:hover { background:rgba(255,255,255,.025); }
+        .calculation-list-item.selected { border-left-color:var(--active); background:rgba(226,183,89,.055); }
+        .calculation-list-item > span { grid-row:1 / 3; color:var(--muted); font:800 8px/1.25 ui-monospace,monospace; letter-spacing:.08em; }
+        .calculation-list-item > strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:700 11px/1.2 ui-monospace,monospace; }
+        .calculation-list-item > em { color:var(--active); font:800 12px/1 ui-monospace,monospace; font-style:normal; white-space:nowrap; }
+        .calculation-list-item > small { grid-column:2 / 4; color:var(--good); font:750 7px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .calculation-add { appearance:none; min-height:44px; border:0; border-top:1px solid var(--line-strong); background:#11161a; color:var(--active); font:800 9px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .calculation-workbench { min-width:0; background:#12161a; }
+        .calculation-empty { min-height:690px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:var(--muted); text-align:center; font:700 10px/1.4 ui-monospace,monospace; letter-spacing:.08em; }
+        .calculation-empty strong { color:var(--text); font-size:12px; }
+        .calculation-head { min-height:64px; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; padding:10px 14px; border-bottom:1px solid var(--line-strong); background:#171c20; }
+        .calculation-head > div { min-width:0; display:flex; flex-direction:column; gap:7px; }
+        .calculation-head span { color:var(--muted); font:750 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .calculation-head input { width:100%; min-width:0; border:0; border-bottom:1px solid var(--line); background:transparent; color:var(--text); padding:4px 0 7px; outline:none; font:750 17px/1.15 ui-monospace,monospace; letter-spacing:.035em; }
+        .calculation-head input:focus { border-bottom-color:var(--active); }
+        .calculation-meta-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,1fr); border-bottom:1px solid var(--line); }
+        .calculation-meta-grid .field { border-bottom:0; border-right:1px solid var(--line); }
+        .entity-toggle { min-height:100%; border-bottom:0; background:rgba(255,255,255,.012); }
+        .calculation-entity-strip { min-height:42px; display:grid; grid-template-columns:190px minmax(0,1fr); align-items:center; gap:12px; padding:0 14px; border-bottom:1px solid var(--line); background:#0d1013; }
+        .calculation-entity-strip span { color:var(--muted); font:750 8px/1 ui-monospace,monospace; letter-spacing:.11em; }
+        .calculation-entity-strip strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--good); font:700 10px/1 ui-monospace,monospace; }
+        .calculation-signal-editor { padding:14px; border-bottom:1px solid var(--line-strong); }
+        .calculation-signal-head, .calculation-signal-row { display:grid; grid-template-columns:54px minmax(0,1fr) 130px 38px; gap:7px; align-items:center; }
+        .calculation-signal-head { min-height:28px; padding:0 1px; color:var(--muted); font:750 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .calculation-signal-row { min-height:46px; margin-bottom:6px; padding:5px; border:1px solid var(--line); background:#0f1316; }
+        .calculation-signal-row select { width:100%; min-width:0; min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:10px; }
+        .calculation-signal-row > strong { color:var(--active); text-align:right; font:800 11px/1 ui-monospace,monospace; white-space:nowrap; }
+        .calculation-signal-row .danger { min-width:34px; padding:0; }
+        .calculation-term-add { margin-top:7px; }
+        .calculation-live { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(250px,.55fr); grid-template-rows:auto 1fr; min-height:260px; background:#0d1013; }
+        .calculation-live-title { grid-column:1 / -1; min-height:42px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 14px; border-bottom:1px solid var(--line); }
+        .calculation-live-title span { color:var(--muted); font:800 8px/1 ui-monospace,monospace; letter-spacing:.12em; }
+        .calculation-live-title strong { font:750 10px/1 ui-monospace,monospace; letter-spacing:.06em; }
+        .calculation-breakdown { min-width:0; padding:14px; border-right:1px solid var(--line-strong); }
+        .calculation-breakdown > div { min-height:38px; display:grid; grid-template-columns:34px 120px minmax(0,1fr); align-items:center; gap:10px; border-bottom:1px dotted var(--line); }
+        .calculation-breakdown b { color:var(--active); font:800 14px/1 ui-monospace,monospace; }
+        .calculation-breakdown strong { text-align:right; font:800 12px/1 ui-monospace,monospace; white-space:nowrap; }
+        .calculation-breakdown span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); font:650 9px/1 ui-monospace,monospace; }
+        .calculation-no-terms { display:flex !important; align-items:center; justify-content:center; min-height:150px !important; border:1px dashed var(--line) !important; color:var(--muted); font:750 9px/1 ui-monospace,monospace; letter-spacing:.08em; }
+        .calculation-result { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:20px; background:rgba(226,183,89,.035); }
+        .calculation-result > span { color:var(--muted); font:800 8px/1 ui-monospace,monospace; letter-spacing:.12em; }
+        .calculation-result > strong { color:var(--active); font:650 38px/1 ui-monospace,monospace; letter-spacing:-.045em; }
+        .calculation-result > small { color:var(--muted); max-width:100%; text-align:center; font:650 9px/1.35 ui-monospace,monospace; }
+        .measurement-source { display:flex; flex-direction:column; gap:7px; padding:10px; margin-bottom:8px; border:1px solid var(--line); border-left:3px solid rgba(226,183,89,.45); background:#0f1316; }
+        .measurement-source.thermal-source { border-left-color:rgba(93,159,198,.65); }
+        .measurement-source-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+        .measurement-source-head span { color:var(--muted); font:800 8px/1 ui-monospace,monospace; letter-spacing:.09em; }
+        .measurement-source-head strong { color:var(--active); font:800 11px/1 ui-monospace,monospace; white-space:nowrap; }
+        .measurement-source.thermal-source .measurement-source-head strong { color:var(--thermal); }
+        .measurement-source select { width:100%; min-width:0; min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:10px; }
+        .measurement-source > small { color:var(--muted); font:600 8px/1.35 ui-monospace,monospace; overflow-wrap:anywhere; }
+        .measurement-source-empty { min-height:34px; display:flex; align-items:center; padding:0 9px; border:1px dashed var(--line); color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.08em; }
         .hierarchy-section .field { padding:0 0 10px; border-bottom:0; }
         .hierarchy-subhead { min-height:28px; display:flex; align-items:center; justify-content:space-between; gap:8px; margin:2px 0 6px; color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
         .hierarchy-subhead strong { min-width:24px; min-height:24px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font-size:9px; }
@@ -2386,10 +2731,21 @@ class EnergySystemDashboardPanel extends HTMLElement {
           .level-toolbar { align-items:stretch; flex-direction:column; }
           .level-tools { flex-wrap:wrap; }
           .layout-editor { grid-template-columns:1fr; }
+          .calculations-editor { grid-template-columns:1fr; }
+          .calculation-list { border-right:0; border-bottom:1px solid var(--line-strong); max-height:320px; }
+          .calculation-empty { min-height:320px; }
+          .calculation-live { grid-template-columns:1fr; grid-template-rows:auto auto auto; }
+          .calculation-live-title { grid-column:1; }
+          .calculation-breakdown { border-right:0; border-bottom:1px solid var(--line-strong); }
           .layout-stage { border-right:0; border-bottom:1px solid var(--line); }
           .editor-floor-group { grid-template-columns:42px minmax(0,1fr); }
           .floor-indicator strong { font-size:10px; }
           .floor-layout-meta { grid-template-columns:1fr auto; }
+          .calculation-meta-grid { grid-template-columns:1fr; }
+          .calculation-meta-grid .field { border-right:0; border-bottom:1px solid var(--line); }
+          .calculation-entity-strip { grid-template-columns:1fr; gap:5px; padding:9px 12px; }
+          .calculation-signal-head { display:none; }
+          .calculation-signal-row { grid-template-columns:46px minmax(0,1fr) 90px 34px; }
           .floor-layout-meta span { display:none; }
           .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),38px); min-height:calc(var(--rows) * 38px); background-size:calc(100% / 12) 100%,100% 38px; }
           .system-cell { grid-column:1 / -1 !important; }

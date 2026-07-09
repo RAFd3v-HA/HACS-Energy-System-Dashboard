@@ -14,10 +14,12 @@ from homeassistant.components.frontend import (
 )
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 
+from .calculation import CalculationManager
 from .const import (
+    DATA_MANAGER,
     DATA_PANEL_REGISTERED,
     DATA_STORE,
     DOMAIN,
@@ -33,7 +35,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 10,
+    "version": 11,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -44,6 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "direction": "import_positive",
     },
     "generation": [],
+    "calculations": [],
     "storage": [],
     "heating": [],
     "buffer": {
@@ -65,6 +68,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "energy_entity": "",
             "thermal_power_entity": "",
             "thermal_energy_entity": "",
+            "power_source_type": "",
+            "power_source_id": "",
+            "energy_source_type": "",
+            "energy_source_id": "",
+            "thermal_power_source_type": "",
+            "thermal_power_source_id": "",
+            "thermal_energy_source_type": "",
+            "thermal_energy_source_id": "",
             "calculation_type": "difference",
             "basis_area_id": "",
             "source_area_ids": [],
@@ -94,12 +105,21 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
     websocket_api.async_register_command(hass, websocket_get_config)
     websocket_api.async_register_command(hass, websocket_save_config)
+    websocket_api.async_register_command(hass, websocket_subscribe_calculations)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up the dashboard panel."""
+    """Set up the dashboard panel and calculation sensors."""
     domain_data = hass.data.setdefault(DOMAIN, {})
+    store: Store[dict[str, Any]] = domain_data[DATA_STORE]
+    stored = await store.async_load()
+    config = _normalize_config(stored or DEFAULT_CONFIG)
+
+    manager = CalculationManager(hass)
+    domain_data[DATA_MANAGER] = manager
+    await manager.async_start(config)
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     if not domain_data.get(DATA_PANEL_REGISTERED):
         frontend_dir = Path(__file__).parent / "frontend"
@@ -118,7 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.6",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.4.0",
                 }
             },
             require_admin=False,
@@ -129,11 +149,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload the dashboard panel."""
-    if hass.data.get(DOMAIN, {}).get(DATA_PANEL_REGISTERED):
+    """Unload the dashboard panel and calculation platform."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    domain_data = hass.data.get(DOMAIN, {})
+    manager: CalculationManager | None = domain_data.get(DATA_MANAGER)
+    if manager is not None:
+        await manager.async_stop()
+        domain_data.pop(DATA_MANAGER, None)
+    if domain_data.get(DATA_PANEL_REGISTERED):
         async_remove_panel(hass, PANEL_URL)
-        hass.data[DOMAIN][DATA_PANEL_REGISTERED] = False
-    return True
+        domain_data[DATA_PANEL_REGISTERED] = False
+    return unload_ok
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_config"})
@@ -144,6 +170,10 @@ async def websocket_get_config(
     msg: dict[str, Any],
 ) -> None:
     """Return the persisted dashboard configuration."""
+    manager: CalculationManager | None = hass.data[DOMAIN].get(DATA_MANAGER)
+    if manager is not None and manager.config:
+        connection.send_result(msg["id"], manager.config)
+        return
     store: Store[dict[str, Any]] = hass.data[DOMAIN][DATA_STORE]
     data = await store.async_load()
     connection.send_result(msg["id"], _normalize_config(data or DEFAULT_CONFIG))
@@ -166,7 +196,28 @@ async def websocket_save_config(
     config = _normalize_config(msg["config"])
     store: Store[dict[str, Any]] = hass.data[DOMAIN][DATA_STORE]
     await store.async_save(config)
+    manager: CalculationManager | None = hass.data[DOMAIN].get(DATA_MANAGER)
+    if manager is not None:
+        await manager.async_apply_config(config)
     connection.send_result(msg["id"], {"saved": True, "config": config})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe_calculations"})
+@websocket_api.async_response
+async def websocket_subscribe_calculations(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Subscribe a frontend client to calculated values."""
+    manager: CalculationManager = hass.data[DOMAIN][DATA_MANAGER]
+
+    @callback
+    def send_snapshot() -> None:
+        connection.send_event(msg["id"], manager.snapshot())
+
+    connection.subscriptions[msg["id"]] = manager.async_add_value_listener(send_snapshot)
+    send_snapshot()
 
 
 def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -178,7 +229,7 @@ def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 
 
 def _normalize_measure_terms(raw_terms: Any) -> list[dict[str, str]]:
-    """Normalize calculation terms that reference an area value or HA entity."""
+    """Normalize calculation terms that reference an area, calculation, or HA entity."""
     if not isinstance(raw_terms, list):
         return []
     result: list[dict[str, str]] = []
@@ -186,7 +237,7 @@ def _normalize_measure_terms(raw_terms: Any) -> list[dict[str, str]]:
         if not isinstance(raw_term, dict):
             continue
         source_type = str(raw_term.get("source_type") or "area")
-        if source_type not in {"area", "entity"}:
+        if source_type not in {"area", "entity", "calculation"}:
             source_type = "area"
         source_id = str(raw_term.get("source_id") or raw_term.get("area_id") or "")
         if not source_id:
@@ -239,9 +290,9 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 10
+    normalized["version"] = 11
 
-    for key in ("generation", "storage", "heating", "areas", "levels"):
+    for key in ("generation", "storage", "heating", "calculations", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
             normalized[key] = []
 
@@ -312,6 +363,34 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             module[key] = str(module.get(key) or "")
         heating.append(module)
     normalized["heating"] = heating
+
+    calculations: list[dict[str, Any]] = []
+    used_calculation_ids: set[str] = set()
+    valid_calculation_kinds = {"power", "energy", "thermal_power", "thermal_energy"}
+    for index, raw_calculation in enumerate(normalized["calculations"]):
+        if not isinstance(raw_calculation, dict):
+            continue
+        calculation = dict(raw_calculation)
+        calculation_id = str(calculation.get("id") or f"calc_{index}")
+        base_id = calculation_id
+        suffix = 1
+        while calculation_id in used_calculation_ids:
+            suffix += 1
+            calculation_id = f"{base_id}_{suffix}"
+        used_calculation_ids.add(calculation_id)
+        kind = str(calculation.get("kind") or "power")
+        if kind not in valid_calculation_kinds:
+            kind = "power"
+        calculations.append(
+            {
+                "id": calculation_id,
+                "name": str(calculation.get("name") or f"Berechneter Messwert {index + 1}"),
+                "kind": kind,
+                "terms": _normalize_measure_terms(calculation.get("terms")),
+                "expose_entity": bool(calculation.get("expose_entity", False)),
+            }
+        )
+    normalized["calculations"] = calculations
 
     # Levels / building floors. Existing V0.1 configs are migrated to one level.
     levels: list[dict[str, Any]] = []
@@ -406,6 +485,18 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         if layout_mode not in {"docked", "free"}:
             layout_mode = "docked"
 
+        source_values: dict[str, str] = {}
+        for kind_name in ("power", "energy", "thermal_power", "thermal_energy"):
+            type_field = f"{kind_name}_source_type"
+            id_field = f"{kind_name}_source_id"
+            source_type = str(area.get(type_field) or "")
+            source_id = str(area.get(id_field) or "")
+            if source_type not in {"entity", "calculation"} or not source_id:
+                source_type = ""
+                source_id = ""
+            source_values[type_field] = source_type
+            source_values[id_field] = source_id
+
         areas.append(
             {
                 "id": area_id,
@@ -417,6 +508,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "energy_entity": str(area.get("energy_entity") or ""),
                 "thermal_power_entity": str(area.get("thermal_power_entity") or ""),
                 "thermal_energy_entity": str(area.get("thermal_energy_entity") or ""),
+                **source_values,
                 "calculation_type": calculation_type,
                 "basis_area_id": basis_area_id,
                 "source_area_ids": normalized_sources,
@@ -469,6 +561,84 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 or (term["source_id"] in valid_ids and term["source_id"] != area["id"])
             ]
 
+
+    # Move pre-0.4 area calculations into the central calculation model.
+    kind_term_fields = {
+        "power": "power_terms",
+        "energy": "energy_terms",
+        "thermal_power": "thermal_power_terms",
+        "thermal_energy": "thermal_energy_terms",
+    }
+    kind_entity_fields = {
+        "power": "power_entity",
+        "energy": "energy_entity",
+        "thermal_power": "thermal_power_entity",
+        "thermal_energy": "thermal_energy_entity",
+    }
+    kind_labels = {
+        "power": "Elektrische Leistung",
+        "energy": "Energie heute",
+        "thermal_power": "Thermische Leistung",
+        "thermal_energy": "Thermische Energie heute",
+    }
+    calculations_by_id = {item["id"]: item for item in calculations}
+    for area in areas:
+        for kind_name, term_field in kind_term_fields.items():
+            type_field = f"{kind_name}_source_type"
+            id_field = f"{kind_name}_source_id"
+            if area.get(type_field) and area.get(id_field):
+                continue
+            legacy_terms_for_kind = area.get(term_field, [])
+            if area.get("mode") == "calculated" and legacy_terms_for_kind:
+                calculation_id = f"area_{area['id']}_{kind_name}"
+                if calculation_id not in calculations_by_id:
+                    calculation = {
+                        "id": calculation_id,
+                        "name": f"{area['name']} · {kind_labels[kind_name]}",
+                        "kind": kind_name,
+                        "terms": [dict(term) for term in legacy_terms_for_kind],
+                        "expose_entity": False,
+                    }
+                    calculations.append(calculation)
+                    calculations_by_id[calculation_id] = calculation
+                area[type_field] = "calculation"
+                area[id_field] = calculation_id
+                continue
+            legacy_entity = str(area.get(kind_entity_fields[kind_name]) or "")
+            if legacy_entity:
+                area[type_field] = "entity"
+                area[id_field] = legacy_entity
+
+    valid_calculation_ids = {item["id"] for item in calculations}
+    for calculation in calculations:
+        calculation["terms"] = [
+            term
+            for term in calculation.get("terms", [])
+            if (
+                term["source_type"] == "entity"
+                or (term["source_type"] == "area" and term["source_id"] in valid_ids)
+                or (
+                    term["source_type"] == "calculation"
+                    and term["source_id"] in valid_calculation_ids
+                    and term["source_id"] != calculation["id"]
+                )
+            )
+        ]
+
+    for area in areas:
+        for kind_name in kind_term_fields:
+            type_field = f"{kind_name}_source_type"
+            id_field = f"{kind_name}_source_id"
+            source_type = area.get(type_field)
+            source_id = area.get(id_field)
+            if source_type == "calculation" and source_id not in valid_calculation_ids:
+                area[type_field] = ""
+                area[id_field] = ""
+            elif source_type not in {"entity", "calculation"}:
+                area[type_field] = ""
+                area[id_field] = ""
+
+    normalized["calculations"] = calculations
 
     # Parent/child hierarchy is independent from calculation dependencies.
     # Break malformed imported parent cycles by attaching the affected node to house.

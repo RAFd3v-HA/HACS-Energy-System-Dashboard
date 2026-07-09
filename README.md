@@ -1,150 +1,178 @@
-# Energy System Dashboard 0.3.6
+# Energy System Dashboard 0.4.0
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## V0.3.6 – Lastkanal, Stockwerksreferenz und vertikale Zentrierung
+## V0.4.0 – Zentrale Berechnungen und echte Home-Assistant-Sensoren
 
-- Die Lastbox am Stockwerksabgang enthält weiterhin nur die aktuelle Leistung, liegt jetzt aber oberhalb der animierten Leitung. Die Flow-Animation läuft dadurch nicht mehr durch Wattwerte oder Text.
-- Die seitliche Stockwerksreferenz zeigt Stockwerksname, aktuelle Stockwerkslast und `HEUTE`-Energie gemeinsam an.
-- Alle dargestellten Stockwerke erhalten eine gemeinsame Mindesthöhe. Diese wird aus der längsten Stockwerksbezeichnung im aktuellen Gebäudestapel abgeleitet.
-- Root-Bereiche werden in der verfügbaren Stockwerksfläche vertikal zentriert. Parent und Children werden dabei als zusammenhängender Hierarchieverband gemeinsam zentriert.
-- Kleine Einzelbereiche wie `Garten` kleben dadurch nicht mehr direkt unter der oberen Stockwerkskante.
-- Die gleiche Geometrie und Zentrierungslogik gilt für elektrische und thermische Stockwerkslasten.
-- Frontend- und Lovelace-Ressourcen verwenden Version `0.3.6` zur Cache-Trennung.
+V0.4.0 trennt Berechnungen vollständig vom Gebäudeeditor. Berechnete Messwerte werden zentral im neuen Reiter **BERECHNUNGEN** aufgebaut und können anschließend in der Konfiguration als Messwertquelle verwendet werden.
 
-## V0.3.5 – Flow-Geometrie und Child-Connector-Cleanup
+### Neuer Reiter `BERECHNUNGEN`
 
-- Elektrische und thermische Verteilleitungen verwenden dieselbe durchgehende Leitungsfarbe und dieselbe Animationsdefinition.
-- Der Übergang von der mittigen Verteilung in die linke Stockwerksschiene ist geometrisch geschlossen.
-- Die mittige Fallleitung und der horizontale Verteiler treffen sich pixelgenau auf derselben 2-px-Achse.
-- Die Stockwerksschiene endet beim letzten Stockwerk auf Höhe des letzten Abgangs.
-- Parent/Child-Container verwenden ein festes Spacing-System ohne doppelte 2-px-Rahmen.
-- Children werden vertikal unter ihrem Parent angeordnet. Die Hierarchielinie wird nur zwischen tatsächlich vorhandenen Children fortgeführt und endet auf Höhe des letzten Childs.
-- Die reservierte Rasterhöhe eines Parent-Verbunds wird rekursiv aus allen Children berechnet.
-
-## V0.3.4 – Layout- und Flow-Korrektur
-
-- Parent/Child-Bereiche erben das Stockwerk des Parents und werden als verschachtelter Verbund gerendert.
-- Root-Kacheln behalten ihre konfigurierte Größe; ein Parent wird nicht mehr künstlich breiter als ein gleichartiger Root-Bereich.
-- Parent- und Child-Rahmen werden nicht mehr über negative Margins übereinandergelegt.
-- Elektrische und thermische Energieflüsse laufen ausschließlich in eigenen Leitungsgassen und nicht durch Bereichskacheln.
-- Die Ebenenlast steht direkt am Abgang vor dem jeweiligen Stockwerk.
-- Die Gesamtlast ist die Summe aller konfigurierten Ebenen; frei benannte neue Ebenen werden berücksichtigt.
-- Panel und Read-only-Karte zeigen die geladene Frontend-Version an.
-
-
-## Neu in 0.3.3
-
-### Parent und Child werden wirklich hierarchisch dargestellt
-
-Unterbereiche liegen nicht mehr als gleichwertige Kacheln neben ihrem Parent. Der Parent bildet jetzt eine größere Hauptkachel; seine direkten Children werden kompakt unmittelbar darunter gerendert.
+Die Oberfläche besteht aus einer Messwertliste links und einem technischen Signal-/Recheneditor rechts:
 
 ```text
-┌─────────────────────────────────────┐
-│ kl. Wohnung                  417 W  │
-│ PARENT · 1 UNTERBEREICH             │
-├─────────────────────────────────────┤
-│ ┌───────────────────────┐           │
-│ │ Waschmaschine      0 W │           │
-│ │ ↳ kl. Wohnung          │           │
-│ └───────────────────────┘           │
-└─────────────────────────────────────┘
+BERECHNETE MESSWERTE        WOHNUNG OHNE WASCHMASCHINE
+
+Wohnung Rest      408 W     + Wohnung Leistung       415 W
+EG Rest          2,31 kW    - Waschmaschine            7 W
+Technik gesamt    820 W     ──────────────────────────────
+                              ERGEBNIS                 408 W
 ```
 
-Die Gruppierung wird im Magnetischen Gebäudeplan und in den Live-Ansichten verwendet. Eine Parent/Child-Zuordnung übernimmt das Stockwerk des Parents für den gesamten Child-Zweig, damit Children nicht versehentlich auf einem anderen Stockwerk dargestellt werden.
+Pro Berechnung wird eine Messgröße festgelegt:
 
-Children können im Child-Verbund per Drag-and-drop neu sortiert oder auf einen anderen Parent-Child-Verbund gezogen werden.
+- Elektrische Leistung
+- Energie heute
+- Thermische Leistung
+- Thermische Energie heute
 
-### Elektrische Verteilung = Summe der Stockwerkslasten
+Die Quellenauswahl wird passend zur Messgröße gefiltert. Rechenzeilen unterstützen `+` und `−` und können auf folgende Quellen zugreifen:
 
-Die alte Blattbereichs-Summierung ist entfernt. Sie war bei Unterzählern falsch: Ein gemessener Parent wurde durch sein Child ersetzt.
+- Bereichsmesswerte
+- andere kompatible berechnete Messwerte
+- Home-Assistant-Entities
 
-Jetzt wird zuerst je Stockwerk eine Teillast gebildet. Pro Hierarchie-Zweig gilt:
+Die Live-Berechnung zeigt jeden Einzelwert und das Ergebnis separat an.
 
-1. Hat der Parent für die Messgröße einen eigenen Messwert oder eine eigene Berechnung, ist dieser Wert die Last des gesamten Zweigs.
-2. Hat der Parent keinen eigenen Messwert, werden seine konfigurierten Children rekursiv addiert.
+### Berechneten Messwert als Home-Assistant-Sensor bereitstellen
+
+Bei jeder Berechnung gibt es:
+
+```text
+[✓] ALS HOME ASSISTANT SENSOR BEREITSTELLEN
+```
+
+Nach dem Speichern stellt die Integration eine echte Sensor-Entity bereit, zum Beispiel:
+
+```text
+sensor.wohnung_ohne_waschmaschine
+```
+
+Die technische Zuordnung verwendet eine stabile Calculation-ID beziehungsweise `unique_id`. Eine in Home Assistant später geänderte Entity-ID zerstört deshalb nicht die interne Berechnungsdefinition.
+
+Die Sensortypen werden automatisch passend gesetzt:
+
+```text
+Elektrische / thermische Leistung
+device_class  power
+unit          W
+state_class   measurement
+
+Energie heute / thermische Energie heute
+device_class  energy
+unit          kWh
+state_class   total
+last_reset    lokaler Tagesbeginn
+```
+
+Es werden nur Sensoren angelegt, bei denen die Bereitstellung ausdrücklich aktiviert wurde.
+
+### Berechnete Messwerte in der Konfiguration verwenden
+
+Im Gebäudeeditor besitzt jeder Bereich vier Messwertquellen:
+
+```text
+ELEKTRISCHE LEISTUNG
+ENERGIE HEUTE
+THERMISCHE LEISTUNG
+THERMISCHE ENERGIE HEUTE
+```
+
+Pro Messwert kann die Quelle gewählt werden:
+
+```text
+Nicht konfiguriert
+Home Assistant Entity
+Berechneter Messwert
+```
 
 Beispiel:
 
 ```text
-EG
-└── kl. Wohnung       417 W   ← Gesamtzähler des Zweigs
-    └── Waschmaschine   0 W   ← Unterzähler, nur Detailwert
+Bereich: EG Rest
 
-UG
-└── Garten              7 W
+ELEKTRISCHE LEISTUNG
+Quelle: Berechneter Messwert
+Messwert: EG Restleistung
 ```
 
-Die Anzeige lautet:
+Berechnete HA-Sensoren werden in normalen Entity-Auswahllisten zusätzlich in der Gruppe **BERECHNETE MESSWERTE** vor den übrigen Home-Assistant-Entities angezeigt.
+
+### Berechnung läuft im Backend
+
+Die zentrale Calculation Engine läuft in der Home-Assistant-Integration. Dashboard, read-only Karte und optionale Sensor-Entities greifen dadurch auf dieselbe Berechnung zurück.
 
 ```text
-EG TEILLAST        417 W
-UG TEILLAST          7 W
-────────────────────────
-ELEKTRISCHE
-VERTEILUNG          424 W
+HOME ASSISTANT ENTITIES
+          │
+          ▼
+CALCULATION ENGINE
+          │
+          ├── Dashboard
+          ├── Read-only Lovelace Card
+          └── SensorEntity
 ```
 
-Neue Stockwerke beziehungsweise frei benannte Ebenen fließen automatisch in diese Summe ein, sobald dort eine elektrische Mess- oder Berechnungskonfiguration vorhanden ist.
+Tagesenergien werden weiterhin aus den Recorder-Statistiken ab lokalem Tagesbeginn gebildet.
 
-### Animierter Fluss in die Stockwerke
+## V0.4.0 – Raster Option B
 
-Zwischen elektrischer Verteilung und Gebäudestapel gibt es eine gemeinsame animierte Verteilleitung. Jedes Stockwerk besitzt einen Abzweig. Die aktuelle Stockwerkslast wird direkt an der seitlichen Stockwerksreferenz und zusätzlich als `TEILLAST` im Kopf des Stockwerks angezeigt.
+Das globale CAD-artige Kreuzraster ist entfernt.
 
-Die Animationsphase basiert auf der aktuellen Zeit. Dadurch beginnt der gelbe Marker nach einem Home-Assistant-State-Update nicht mehr mehrfach sichtbar am Leitungsanfang neu.
+Außerhalb der Stockwerksflächen verwendet die Oberfläche einen nahezu ruhigen, einfarbigen technischen Hintergrund.
 
-### Thermische Last analog zur elektrischen Last
-
-Bereiche können jetzt zusätzlich thermische Messwerte besitzen:
-
-- thermische Leistung
-- thermische Energie heute
-
-Bei berechneten Bereichen gibt es vier unabhängige GUI-Berechnungen:
+Das Raster erscheint nur innerhalb der tatsächlichen Stockwerksflächen:
 
 ```text
-AKTUELLE ELEKTRISCHE LEISTUNG
-ELEKTRISCHE ENERGIE HEUTE
-AKTUELLE THERMISCHE LEISTUNG
-THERMISCHE ENERGIE HEUTE
+ELEKTRISCHE VERTEILUNG
+────────────────────────────────────────
+
+       fast rasterfreier Systembereich
+
+┌ OG ┬──────────────────────────────────┐
+│    │  │      │      │      │          │
+│    │  ─────────────────────────────    │
+│    │        STOCKWERKSRASTER           │
+└────┴──────────────────────────────────┘
+
+       fast rasterfreier Zwischenbereich
 ```
 
-Für jede Berechnung werden konkrete Messwerte über die GUI mit `+` oder `−` zusammengestellt.
+Die Stockwerksraster sind zusätzlich etwas zurückhaltender gezeichnet. Parent-/Child-Gruppen erhalten einen garantierten vertikalen Innenabstand und werden weiterhin als gemeinsamer Verbund in der verfügbaren Stockwerksfläche zentriert.
 
-Die thermische Verteilung verwendet dieselbe Parent/Child- und Stockwerkslogik:
+## Bestehende Funktionen
 
-```text
-THERMISCHE VERTEILUNG = Summe der thermischen Stockwerkslasten
-```
-
-Im Reiter `THERMISCH` führt eine blaue animierte Verteilleitung zu den thermisch konfigurierten Stockwerken. Elektrisch nicht konfigurierte Werte werden dort nicht angezeigt.
-
-Wärmeerzeuger können optional zusätzlich erhalten:
-
-- Thermische Leistung
-- Thermische Energie / kWh
-
-Damit kann eine Wärmepumpe beispielsweise elektrische und thermische Leistung getrennt darstellen.
+- optionale Netzreferenz
+- PV-/Erzeugermodule
+- Batteriespeicher
+- getrennte Wärmeerzeuger wie Wärmepumpe, Heizkessel, elektrischer Heizstab und Kamin
+- elektrische und thermische Verteilungen
+- frei benannte Stockwerke beziehungsweise Ebenen
+- magnetischer Gebäudeplan mit angedockten und freien Root-Bereichen
+- echte Parent-/Child-Hierarchie
+- Stockwerksaggregation ohne Doppelzählung von Unterzählern
+- Energie heute aus Recorder-Statistiken
+- read-only Lovelace-Karte mit zentraler Topologie
 
 ## Installation / Update
 
-1. Den bisherigen Ordner `/config/custom_components/energy_system_dashboard` vollständig löschen beziehungsweise ersetzen.
+1. Den bisherigen Ordner `/config/custom_components/energy_system_dashboard` vollständig ersetzen.
 2. `custom_components/energy_system_dashboard` aus diesem Paket nach `/config/custom_components/` kopieren.
 3. Home Assistant vollständig neu starten.
-4. **Energiesystem → KONFIGURATION** öffnen.
-5. Bei Bedarf thermische Bereichs- und Wärmeerzeuger-Messwerte ergänzen.
-6. **GEBÄUDEPLAN SPEICHERN** verwenden.
+4. **Energiesystem → BERECHNUNGEN** öffnen.
+5. Berechnete Messwerte anlegen und speichern.
+6. Unter **KONFIGURATION → MAGNETISCHER GEBÄUDEPLAN** die berechneten Messwerte als Bereichsquellen auswählen.
 
-Die bestehende 0.3.2-Konfiguration wird normalisiert. Neue thermische Felder bleiben zunächst leer. Vorhandene elektrische Zuordnungen, Parent/Child-Beziehungen und Stockwerke bleiben erhalten.
+Bestehende V0.3.x-Bereichsberechnungen werden beim Laden in zentrale Berechnungen migriert und den bisherigen Bereichen wieder als Messwertquelle zugeordnet.
 
 ## Read-only Lovelace-Karte
 
-Die Karte verwendet dieselbe zentrale Topologie. Es werden keine Entity-IDs in der Karten-YAML eingetragen.
+Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebnisse. Es werden keine Entity-IDs in der Karten-YAML benötigt.
 
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.3.6
+/energy_system_dashboard/energy-system-card.js?v=0.4.0
 ```
 
 Home Assistant:
@@ -154,7 +182,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.3.6
+URL: /energy_system_dashboard/energy-system-card.js?v=0.4.0
 Typ: JavaScript-Modul
 ```
 
@@ -163,7 +191,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.6
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.0
       type: module
 ```
 
@@ -181,4 +209,4 @@ Vollständige Karten-YAML-Dokumentation:
 
 ## Datenquellen
 
-Das Dashboard kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Es verwendet vorhandene Home-Assistant-Entities und für Tagesenergie die Recorder-Statistik.
+Das Dashboard kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Es verwendet vorhandene Home-Assistant-Entities. Die zentrale Berechnungsengine kombiniert diese Messwerte und kann ausgewählte Ergebnisse wiederum als Home-Assistant-Sensoren bereitstellen.

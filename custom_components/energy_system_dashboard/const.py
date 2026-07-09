@@ -11,4 +11,5 @@ STATIC_URL: Final = "/energy_system_dashboard"
 STORAGE_KEY: Final = f"{DOMAIN}.config"
 STORAGE_VERSION: Final = 1
 DATA_STORE: Final = "store"
+DATA_MANAGER: Final = "calculation_manager"
 DATA_PANEL_REGISTERED: Final = "panel_registered"
