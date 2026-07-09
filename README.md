@@ -1,6 +1,13 @@
-# Energy System Dashboard 0.4.0
+# Energy System Dashboard 0.4.1
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
+
+## V0.4.1 – Quellen-Dropdown im Berechnungseditor
+
+- Live-Updates von Home Assistant ersetzen ein gerade aktives Dropdown oder Eingabefeld im Reiter **BERECHNUNGEN** nicht mehr.
+- Solange ein Berechnungsfeld fokussiert ist, wird ein Live-Neurendering zurückgestellt.
+- Nach dem Verlassen des Feldes wird ein eventuell aufgeschobenes Live-Update einmalig gerendert.
+- Die eigentliche Quellenwahl und die Berechnungslogik bleiben unverändert.
 
 ## V0.4.0 – Zentrale Berechnungen und echte Home-Assistant-Sensoren
 
@@ -172,7 +179,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.4.0
+/energy_system_dashboard/energy-system-card.js?v=0.4.1
 ```
 
 Home Assistant:
@@ -182,7 +189,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.4.0
+URL: /energy_system_dashboard/energy-system-card.js?v=0.4.1
 Typ: JavaScript-Modul
 ```
 
@@ -191,7 +198,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.0
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.1
       type: module
 ```
 

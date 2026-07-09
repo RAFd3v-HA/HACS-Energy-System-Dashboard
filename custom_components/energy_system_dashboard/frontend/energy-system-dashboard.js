@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.4.0";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.4.1";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -18,6 +18,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this._dailyLoading = false;
     this._calculationValues = {};
     this._calculationUnsub = null;
+    this._deferredLiveRender = false;
     this._selectedCalculationId = null;
     this._layoutLevelId = null;
     this._viewLevelId = null;
@@ -27,6 +28,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this._dailyRefreshTimer = null;
     this._boundClick = (event) => this._onClick(event);
     this._boundChange = (event) => this._onChange(event);
+    this._boundFocusOut = (event) => this._onFocusOut(event);
     this._boundDragStart = (event) => this._onDragStart(event);
     this._boundDragOver = (event) => this._onDragOver(event);
     this._boundDrop = (event) => this._onDrop(event);
@@ -40,7 +42,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._loadConfig();
       return;
     }
-    if (this._loaded && this._tab !== "config") this._render();
+    if (this._loaded) this._requestLiveRender();
   }
 
   get hass() {
@@ -77,6 +79,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   connectedCallback() {
     this.shadowRoot.addEventListener("click", this._boundClick);
     this.shadowRoot.addEventListener("change", this._boundChange);
+    this.shadowRoot.addEventListener("focusout", this._boundFocusOut);
     this.shadowRoot.addEventListener("dragstart", this._boundDragStart);
     this.shadowRoot.addEventListener("dragover", this._boundDragOver);
     this.shadowRoot.addEventListener("drop", this._boundDrop);
@@ -91,6 +94,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   disconnectedCallback() {
     this.shadowRoot.removeEventListener("click", this._boundClick);
     this.shadowRoot.removeEventListener("change", this._boundChange);
+    this.shadowRoot.removeEventListener("focusout", this._boundFocusOut);
     this.shadowRoot.removeEventListener("dragstart", this._boundDragStart);
     this.shadowRoot.removeEventListener("dragover", this._boundDragOver);
     this.shadowRoot.removeEventListener("drop", this._boundDrop);
@@ -129,13 +133,42 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._calculationUnsub = await this._hass.connection.subscribeMessage(
         (message) => {
           this._calculationValues = message?.values || {};
-          if (this.isConnected && this._loaded) this._render();
+          this._requestLiveRender();
         },
         { type: "energy_system_dashboard/subscribe_calculations" },
       );
     } catch (error) {
       console.warn("Energy System Dashboard: Berechnungswerte konnten nicht abonniert werden", error);
     }
+  }
+
+  _calculationEditorControlFocused() {
+    if (this._tab !== "calculations" || !this.shadowRoot) return false;
+    const active = this.shadowRoot.activeElement;
+    return Boolean(
+      active
+      && active.closest?.(".calculation-workbench")
+      && active.matches?.("select, input, textarea"),
+    );
+  }
+
+  _requestLiveRender() {
+    if (!this.isConnected || !this._loaded || this._tab === "config") return;
+    if (this._calculationEditorControlFocused()) {
+      this._deferredLiveRender = true;
+      return;
+    }
+    this._deferredLiveRender = false;
+    this._render();
+  }
+
+  _onFocusOut() {
+    if (!this._deferredLiveRender || this._tab !== "calculations") return;
+    queueMicrotask(() => {
+      if (!this.isConnected || !this._loaded || this._calculationEditorControlFocused()) return;
+      this._deferredLiveRender = false;
+      this._render();
+    });
   }
 
   _clone(value) {
@@ -284,14 +317,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
         }
       }
       this._dailyEnergy = daily;
-      if (this.isConnected) this._render();
+      this._requestLiveRender();
     } catch (error) {
       console.warn("Energy System Dashboard: Tagesenergie konnte nicht geladen werden", error);
     } finally {
       this._dailyLoading = false;
-    this._calculationValues = {};
-    this._calculationUnsub = null;
-    this._selectedCalculationId = null;
     }
   }
 
