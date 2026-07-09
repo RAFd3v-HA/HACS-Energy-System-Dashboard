@@ -33,7 +33,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 9,
+    "version": 10,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -118,7 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.3",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.4",
                 }
             },
             require_admin=False,
@@ -239,7 +239,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 9
+    normalized["version"] = 10
 
     for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -487,6 +487,22 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     for area in areas:
         if area["id"] != "house" and has_parent_cycle(area["id"]):
             area["parent_id"] = "house" if "house" in valid_ids else ""
+
+    # A child belongs visually to its parent and therefore always inherits
+    # the parent's floor. This prevents a configured child from being rendered
+    # as a second root tile on another floor.
+    for _ in range(len(areas)):
+        changed = False
+        for area in areas:
+            parent_id = area.get("parent_id", "")
+            if area["id"] == "house" or not parent_id or parent_id == "house":
+                continue
+            parent = hierarchy_by_id.get(parent_id)
+            if parent and area.get("level_id") != parent.get("level_id"):
+                area["level_id"] = parent["level_id"]
+                changed = True
+        if not changed:
+            break
 
     # Keep docked areas in a stable order without mixing root areas and
     # nested children. Root areas are positioned on the floor grid; children

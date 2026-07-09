@@ -2,6 +2,17 @@
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
+## V0.3.4 – Layout- und Flow-Korrektur
+
+- Parent/Child-Bereiche erben das Stockwerk des Parents und werden als verschachtelter Verbund gerendert.
+- Root-Kacheln behalten ihre konfigurierte Größe; ein Parent wird nicht mehr künstlich breiter als ein gleichartiger Root-Bereich.
+- Parent- und Child-Rahmen werden nicht mehr über negative Margins übereinandergelegt.
+- Elektrische und thermische Energieflüsse laufen ausschließlich in eigenen Leitungsgassen und nicht durch Bereichskacheln.
+- Die Ebenenlast steht direkt am Abgang vor dem jeweiligen Stockwerk.
+- Die Gesamtlast ist die Summe aller konfigurierten Ebenen; frei benannte neue Ebenen werden berücksichtigt.
+- Panel und Read-only-Karte zeigen die geladene Frontend-Version an.
+
+
 ## Neu in 0.3.3
 
 ### Parent und Child werden wirklich hierarchisch dargestellt

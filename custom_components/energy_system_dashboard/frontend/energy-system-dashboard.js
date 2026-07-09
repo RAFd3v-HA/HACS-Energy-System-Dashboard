@@ -1,3 +1,5 @@
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.3.4";
+
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
     super();
@@ -168,6 +170,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _syncLayoutState(config = this._draft || this._config) {
+    this._normalizeHierarchyLevels(config);
     const levels = this._buildingLevels(config);
     const allLevels = this._sortedLevels(config);
     const fallbackLevelId = levels[0]?.id || allLevels[0]?.id || null;
@@ -512,6 +515,29 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
   _childrenOf(parentId, config = this._draft || this._config) {
     return (config?.areas || []).filter((area) => area.id !== "house" && area.parent_id === parentId);
+  }
+
+  _normalizeHierarchyLevels(config = this._draft || this._config) {
+    if (!config?.areas?.length) return;
+    const areas = config.areas;
+    const ids = new Set(areas.map((area) => area.id));
+    for (const area of areas) {
+      if (area.id === "house") continue;
+      if (area.parent_id && area.parent_id !== "house" && !ids.has(area.parent_id)) area.parent_id = "house";
+      if (!area.parent_id) area.parent_id = "house";
+    }
+    for (let pass = 0; pass < areas.length; pass += 1) {
+      let changed = false;
+      for (const area of areas) {
+        if (area.id === "house" || !area.parent_id || area.parent_id === "house") continue;
+        const parent = this._areaById(area.parent_id, config);
+        if (parent && area.level_id !== parent.level_id) {
+          area.level_id = parent.level_id;
+          changed = true;
+        }
+      }
+      if (!changed) break;
+    }
   }
 
   _moveBranchToLevel(area, levelId, config = this._draft || this._config, stack = new Set()) {
@@ -931,9 +957,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const base = this._clampLayout(area?.layout);
     const children = area ? this._sameLevelChildren(area.id, area.level_id, config) : [];
     if (!children.length) return base;
-    const directRows = Math.ceil(children.length / 3);
-    const nestedExtra = Math.max(0, ...children.map((child) => this._sameLevelChildren(child.id, child.level_id, config).length ? 1 : 0));
-    return { ...base, w: Math.max(base.w, 4), h: Math.max(base.h, 3 + directRows * 2 + nestedExtra * 2) };
+    const directRows = Math.max(1, Math.ceil(children.length / 3));
+    const nestedExtra = Math.max(0, ...children.map((child) => this._sameLevelChildren(child.id, child.level_id, config).length ? 2 : 0));
+    return { ...base, w: base.w, h: Math.min(100, base.h + directRows * 2 + nestedExtra) };
   }
 
   _flowPhase(duration = 1.8) {
@@ -965,7 +991,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       <main class="shell">
         <header class="topbar">
           <div>
-            <div class="eyebrow">HOME ASSISTANT / ENERGY TOPOLOGY</div>
+            <div class="eyebrow">HOME ASSISTANT / ENERGY TOPOLOGY · V${ENERGY_SYSTEM_DASHBOARD_VERSION}</div>
             <h1>${this._esc(title)}</h1>
           </div>
           <div class="live-state"><span class="pulse"></span> LIVE <strong>${new Date().toLocaleTimeString("de-DE")}</strong></div>
@@ -1006,7 +1032,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       options.show_status === false ? "hide-status" : "",
     ].filter(Boolean).join(" ");
     const title = options.title || this._config.name || "ENERGY SYSTEM";
-    this.shadowRoot.innerHTML = `${this._styles()}<ha-card class="${classes}"><div class="card-head"><div><span>ENERGY SYSTEM / READ ONLY</span><strong>${this._esc(title)}</strong></div><em><i></i> LIVE</em></div><div class="card-content">${content}</div></ha-card>`;
+    this.shadowRoot.innerHTML = `${this._styles()}<ha-card class="${classes}"><div class="card-head"><div><span>ENERGY SYSTEM / READ ONLY · V${ENERGY_SYSTEM_DASHBOARD_VERSION}</span><strong>${this._esc(title)}</strong></div><em><i></i> LIVE</em></div><div class="card-content">${content}</div></ha-card>`;
   }
 
   _tabButton(tab, label) {
@@ -1239,10 +1265,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const load = kind === "thermal" ? this._levelThermalPower(level, config) : this._levelPower(level, config);
     const today = kind === "thermal" ? this._levelThermalTodayEnergy(level, config) : this._levelTodayEnergy(level, config);
     return `
-      <section class="editor-floor-group overview-floor-group flow-floor-group flow-${kind}">
-        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span class="floor-load">${this._formatPowerW(load)}</span><small class="daily-value">${this._formatEnergyKWh(today)}</small></aside>
+      <section class="overview-floor-group flow-floor-group flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}">
+        <div class="floor-flow-channel"><i class="flow-segment horizontal branch-segment"></i><span class="floor-branch-load">${this._formatPowerW(load)}</span></div>
+        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><small class="daily-value">HEUTE ${this._formatEnergyKWh(today)}</small></aside>
         <div class="floor-layout-body">
-          <div class="floor-layout-meta"><span>${kind === "thermal" ? "THERMISCHE EBENE" : "ELEKTRISCHE EBENE"}</span><strong>${this._esc(level.name)}</strong><em>${this._formatPowerW(load)} TEILLAST</em></div>
+          <div class="floor-layout-meta"><span>${kind === "thermal" ? "THERMISCHE EBENE" : "ELEKTRISCHE EBENE"}</span><strong>${this._esc(level.name)}</strong><em>${roots.length} HAUPTBEREICH${roots.length === 1 ? "" : "E"}</em></div>
           <div class="level-grid readonly" style="--rows:${rows}">
             ${roots.map((area) => this._renderAreaGroup(area, config, false, kind)).join("")}
           </div>
@@ -1269,7 +1296,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
       }
     }
     const floors = levels.map((level) => this._renderOverviewFloorGroup(level, config, kind)).join("");
-    return `<div class="building-stack overview-building-stack distribution-flow-stack flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}">${houseHtml}${selector}${floors || this._empty(kind === "thermal" ? "Noch keine thermischen Bereichslasten vorhanden." : "Noch keine elektrischen Bereiche vorhanden.")}</div>`;
+    const flowRoute = floors ? `<div class="distribution-manifold flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}"><i class="flow-segment vertical manifold-drop"></i><i class="flow-segment horizontal manifold-run"></i></div><div class="floor-stack flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}"><i class="flow-segment vertical floor-rail"></i>${floors}</div>` : "";
+    return `<div class="building-stack overview-building-stack distribution-flow-stack flow-${kind}">${houseHtml}${selector}${flowRoute || this._empty(kind === "thermal" ? "Noch keine thermischen Bereichslasten vorhanden." : "Noch keine elektrischen Bereiche vorhanden.")}</div>`;
   }
   _renderEditorFloorGroup(level, config = this._draft || this._config) {
     const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id);
@@ -1305,8 +1333,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const children = this._sameLevelChildren(area.id, area.level_id, config)
       .filter((child) => interactive || this._branchHasConfig(child, kind, config));
     const layout = this._effectiveLayout(area, config);
-    const position = nested ? "" : `style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}"`;
-    return `<div class="area-group ${nested ? "nested-area-group" : "root-area-group"} depth-${Math.min(depth, 3)}" data-area-group="${this._esc(area.id)}" ${position}>
+    const tileLayout = this._clampLayout(area.layout);
+    const groupClass = children.length ? "has-children" : "leaf-group";
+    const position = nested
+      ? `style="--root-tile-height:${Math.max(42, Number(tileLayout.h || 1) * 42)}px"`
+      : `style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)};--root-tile-height:${Math.max(42, Number(tileLayout.h || 1) * 42)}px"`;
+    return `<div class="area-group ${nested ? "nested-area-group" : "root-area-group"} ${groupClass} depth-${Math.min(depth, 3)}" data-area-group="${this._esc(area.id)}" ${position}>
       ${this._renderAreaTile(area, config, interactive, kind, depth)}
       ${children.length ? `<div class="area-child-grid" data-child-drop-parent="${this._esc(area.id)}">${children.map((child) => this._renderAreaGroup(child, config, interactive, kind, depth + 1, true)).join("")}</div>` : ""}
     </div>`;
@@ -1517,7 +1549,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return `
       <div class="inspector-head"><span>${isHouse ? "ROOT / HOUSE" : area.mode === "calculated" ? "C / CALCULATED" : "M / MEASURED"}</span><button class="danger" data-action="remove-area" data-area-id="${this._esc(area.id)}" ${isHouse || (d.areas || []).length <= 1 ? "disabled" : ""}>REMOVE</button></div>
       ${this._field("Bereichsname", `<input data-area-id="${this._esc(area.id)}" data-area-field="name" value="${this._esc(area.name)}">`)}
-      ${!isHouse ? this._field("Stockwerk", `<select data-area-id="${this._esc(area.id)}" data-area-field="level_id">${levelOptions}</select><div class="custom-floor-add"><input data-custom-floor-name="${this._esc(area.id)}" placeholder="Eigenes Stockwerk, z. B. Galerie"><button type="button" data-action="assign-custom-floor" data-area-id="${this._esc(area.id)}">HINZUFÜGEN</button></div>`) : `<div class="root-note">HAUS IST STOCKWERKÜBERGREIFEND UND IMMER ÜBER DIE VOLLE BREITE ANGEORDNET.</div>`}
+      ${!isHouse ? (() => { const hierarchyParent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, d) : null; return hierarchyParent ? `<div class="root-note child-floor-note">STOCKWERK WIRD VOM PARENT <strong>${this._esc(hierarchyParent.name)}</strong> ÜBERNOMMEN · ${this._esc(this._levelById(hierarchyParent.level_id, d)?.name || "—")}</div>` : this._field("Stockwerk", `<select data-area-id="${this._esc(area.id)}" data-area-field="level_id">${levelOptions}</select><div class="custom-floor-add"><input data-custom-floor-name="${this._esc(area.id)}" placeholder="Eigenes Stockwerk, z. B. Galerie"><button type="button" data-action="assign-custom-floor" data-area-id="${this._esc(area.id)}">HINZUFÜGEN</button></div>`); })() : `<div class="root-note">HAUS IST STOCKWERKÜBERGREIFEND UND IMMER ÜBER DIE VOLLE BREITE ANGEORDNET.</div>`}
       ${this._renderHierarchyEditor(area, d)}
       ${this._field("Datentyp", `<select data-area-id="${this._esc(area.id)}" data-area-field="mode"><option value="measured" ${area.mode !== "calculated" ? "selected" : ""}>Gemessen</option><option value="calculated" ${area.mode === "calculated" ? "selected" : ""}>Berechnet</option></select>`)}
       ${calculation}
@@ -2045,11 +2077,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .mini-line.residual { color:var(--active); }
         .node-meta { border-top:1px solid var(--line); color:var(--muted); font:600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.06em; }
         .node-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .wire.vertical { width:1px; height:36px; background:var(--line); margin:0 auto; position:relative; }
-        .wire.active::after { content:""; position:absolute; left:-2px; top:-4px; width:5px; height:10px; background:var(--active); animation:flow-v 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
-        .wire.flow-thermal { background:rgba(93,159,198,.58); }
-        .wire.flow-thermal.active::after { background:var(--thermal); }
-        @keyframes flow-v { from { transform:translateY(0); } to { transform:translateY(calc(100% + 34px)); } }
+        .wire.vertical { width:2px; height:36px; margin:0 auto; position:relative; overflow:hidden; background:var(--line); }
+        .wire.active::after { content:""; position:absolute; inset:0; background:repeating-linear-gradient(to bottom,transparent 0 7px,var(--active) 7px 13px,transparent 13px 22px); background-size:100% 44px; animation:flow-pattern-v 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
+        .wire.flow-thermal { background:rgba(93,159,198,.48); }
+        .wire.flow-thermal.active::after { background:repeating-linear-gradient(to bottom,transparent 0 7px,var(--thermal) 7px 13px,transparent 13px 22px); background-size:100% 44px; }
+        @keyframes flow-pattern-v { from { background-position:0 0; } to { background-position:0 44px; } }
+        @keyframes flow-pattern-h { from { background-position:0 0; } to { background-position:44px 0; } }
         .bus { max-width:1500px; margin:0 auto; height:46px; border-top:2px solid var(--line-strong); border-bottom:2px solid var(--line-strong); display:flex; align-items:center; justify-content:center; gap:18px; background:rgba(255,255,255,.018); font:700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.12em; }
         .bus strong { color:var(--active); font-size:14px; }
         .thermal-grid { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; align-items:stretch; }
@@ -2122,6 +2155,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .building-stack { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:0; }
         .editor-floor-stack { margin-top:12px; display:flex; flex-direction:column; gap:0; border-top:1px solid var(--line-strong); }
         .editor-floor-group { display:grid; grid-template-columns:58px minmax(0,1fr); min-width:0; border:1px solid var(--line-strong); border-top:0; background:var(--panel); }
+        .overview-floor-group { display:grid; grid-template-columns:150px 62px minmax(0,1fr); min-width:0; border:1px solid var(--line-strong); border-top:0; background:var(--panel); position:relative; }
+        .floor-flow-channel { min-width:0; position:relative; background:#0b0e11; border-right:1px solid var(--line); overflow:visible; }
+        .floor-flow-channel .branch-segment { position:absolute; left:18px; right:0; top:50%; transform:translateY(-50%); }
+        .floor-branch-load { position:absolute; right:10px; top:50%; transform:translateY(-50%); min-width:72px; padding:6px 8px; border:1px solid var(--line-strong); background:#0d1013; color:var(--active); text-align:right; font:800 10px/1 ui-monospace,monospace; letter-spacing:.02em; z-index:3; }
+        .flow-thermal .floor-branch-load { color:var(--thermal); }
         .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 4px; position:relative; overflow:hidden; }
         .floor-indicator strong { writing-mode:vertical-rl; transform:rotate(180deg); color:var(--text); font:800 13px/1 ui-monospace, monospace; letter-spacing:.12em; white-space:nowrap; }
         .floor-indicator span { min-width:26px; min-height:26px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace, monospace; }
@@ -2144,12 +2182,17 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .level-head strong { font-size:12px; letter-spacing:.06em; }
         .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); gap:0; padding:0; min-height:calc(var(--rows) * 42px); background-image:linear-gradient(to right,rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; overflow:hidden; }
         .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),48px); min-height:calc(var(--rows) * 48px); background-size:calc(100% / 12) 100%,100% 48px; }
-        .area-group { min-width:0; min-height:0; display:flex; flex-direction:column; align-self:stretch; position:relative; z-index:1; overflow:hidden; }
-        .root-area-group { margin:-1px 0 0 -1px; }
-        .nested-area-group { width:100%; }
-        .area-child-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:0; padding:6px; border:2px solid var(--line-strong); border-top:0; background:#0d1013; }
-        .nested-area-group > .area-child-grid { border-width:1px; padding:4px; }
-        .area-tile { appearance:none; border:1px solid var(--line-strong); background:#15191d; color:var(--text); min-width:0; padding:10px 12px; display:flex; flex:1 1 auto; flex-direction:column; text-align:left; overflow:hidden; position:relative; z-index:1; margin:0; }
+        .area-group { min-width:0; min-height:0; display:flex; flex-direction:column; align-self:stretch; position:relative; z-index:1; overflow:hidden; box-sizing:border-box; }
+        .root-area-group { margin:0; }
+        .nested-area-group { width:100%; min-height:auto; overflow:visible; }
+        .area-group > .area-tile { flex:0 0 var(--root-tile-height,84px); min-height:var(--root-tile-height,84px); box-sizing:border-box; }
+        .area-child-grid { position:relative; display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:6px; padding:10px 8px 10px 22px; border:1px solid var(--line-strong); border-top:0; background:#0d1013; min-height:0; }
+        .area-child-grid::before { content:""; position:absolute; left:10px; top:0; bottom:10px; width:1px; background:var(--line-strong); }
+        .area-child-grid::after { content:""; position:absolute; left:10px; top:12px; width:10px; height:1px; background:var(--line-strong); }
+        .nested-area-group > .area-child-grid { margin-top:0; padding:7px 6px 7px 18px; border-color:var(--line); }
+        .area-tile { appearance:none; border:1px solid var(--line-strong); background:#15191d; color:var(--text); min-width:0; padding:10px 12px; display:flex; flex-direction:column; text-align:left; overflow:hidden; position:relative; z-index:1; margin:0; }
+        .root-area-group.has-children > .area-tile { border-width:2px; border-bottom-width:1px; }
+        .nested-area-group > .area-tile { border:1px solid var(--line); }
         .house-tile { width:100%; min-height:96px; margin:0; border-color:var(--line-strong); display:block; }
         button.house-tile { cursor:pointer; }
         .house-values { display:grid; grid-template-columns:1fr 1fr 2fr; gap:0; margin-top:10px; border-top:1px solid var(--line); }
@@ -2170,13 +2213,13 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .area-tile-energy { display:flex; justify-content:space-between; gap:8px; margin-top:8px; padding-top:7px; border-top:1px dotted var(--line); font:650 9px/1 ui-monospace, monospace; }
         .area-tile-energy span { color:var(--muted); }
         .area-tile-formula { color:var(--muted); margin-top:7px; font:600 8px/1.25 ui-monospace, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .area-tile.hierarchy-parent { border-width:2px; background:#181e23; box-shadow:inset 3px 0 0 rgba(105,190,255,.32); min-height:122px; }
-        .area-tile.hierarchy-parent .area-tile-head strong { font-size:13px; letter-spacing:.055em; }
-        .area-tile.hierarchy-parent .area-tile-power { font-size:26px; }
+        .area-tile.hierarchy-parent { background:#181e23; box-shadow:inset 3px 0 0 rgba(105,190,255,.32); }
+        .area-tile.hierarchy-parent .area-tile-head strong { font-size:12px; letter-spacing:.055em; }
+        .area-tile.hierarchy-parent .area-tile-power { font-size:22px; }
         .area-hierarchy-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:7px; padding:5px 7px; border:1px solid var(--line); background:rgba(255,255,255,.018); }
         .area-hierarchy-meta span { color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
         .area-hierarchy-meta strong { color:var(--active); font:750 8px/1 ui-monospace,monospace; letter-spacing:.06em; }
-        .area-tile.hierarchy-child { margin:0; background:#0f1316; border-color:var(--line); box-shadow:inset 2px 0 0 rgba(105,190,255,.22); z-index:2; min-height:72px; padding:7px 9px; }
+        .area-tile.hierarchy-child { margin:0; background:#0f1316; border-color:var(--line); box-shadow:inset 2px 0 0 rgba(105,190,255,.22); z-index:2; min-height:58px; padding:7px 9px; }
         .area-tile.hierarchy-child.calculated { box-shadow:inset 2px 0 0 rgba(88,166,255,.42); }
         .area-tile.thermal-area { box-shadow:inset 3px 0 0 rgba(93,159,198,.34); }
         .area-tile.thermal-area .area-tile-head span, .area-tile.thermal-area .area-tile-power { color:var(--thermal); }
@@ -2257,16 +2300,20 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .overview-building-stack .house-tile { border-bottom:0; }
         .overview-floor-group { border-color:var(--line); }
         .distribution-flow-stack { position:relative; }
-        .distribution-flow-stack::before { content:""; position:absolute; left:8px; top:0; bottom:0; width:1px; background:var(--line-strong); z-index:6; pointer-events:none; }
-        .distribution-flow-stack::after { content:""; position:absolute; left:6px; top:0; width:5px; height:10px; background:var(--active); z-index:7; pointer-events:none; animation:flow-stack 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
-        .distribution-flow-stack.flow-thermal::before { background:rgba(93,159,198,.58); }
-        .distribution-flow-stack.flow-thermal::after { background:var(--thermal); }
-        .flow-floor-group .floor-indicator::after { content:""; position:absolute; left:8px; right:0; top:18px; height:1px; background:var(--line-strong); pointer-events:none; }
-        .flow-floor-group .floor-indicator::before { content:""; position:absolute; left:6px; top:16px; width:5px; height:5px; background:var(--active); z-index:8; pointer-events:none; animation:flow-branch 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
-        .flow-floor-group.flow-thermal .floor-indicator::after { background:rgba(93,159,198,.58); }
-        .flow-floor-group.flow-thermal .floor-indicator::before { background:var(--thermal); }
-        @keyframes flow-stack { from { top:0; } to { top:calc(100% - 10px); } }
-        @keyframes flow-branch { from { transform:translateX(0); } to { transform:translateX(50px); } }
+        .distribution-manifold { height:40px; position:relative; overflow:hidden; background:#0b0e11; border-left:1px solid var(--line); border-right:1px solid var(--line); }
+        .flow-segment { display:block; position:absolute; pointer-events:none; z-index:2; background-color:var(--line-strong); overflow:hidden; }
+        .flow-segment::after { content:""; position:absolute; inset:0; animation-duration:1.8s; animation-timing-function:linear; animation-iteration-count:infinite; animation-delay:var(--flow-phase,0s); }
+        .flow-segment.vertical { width:2px; }
+        .flow-segment.horizontal { height:2px; }
+        .flow-segment.vertical::after { background:repeating-linear-gradient(to bottom,transparent 0 7px,var(--active) 7px 13px,transparent 13px 22px); background-size:100% 44px; animation-name:flow-pattern-v; }
+        .flow-segment.horizontal::after { background:repeating-linear-gradient(to right,transparent 0 7px,var(--active) 7px 13px,transparent 13px 22px); background-size:44px 100%; animation-name:flow-pattern-h; }
+        .flow-thermal .flow-segment { background-color:rgba(93,159,198,.48); }
+        .flow-thermal .flow-segment.vertical::after { background:repeating-linear-gradient(to bottom,transparent 0 7px,var(--thermal) 7px 13px,transparent 13px 22px); background-size:100% 44px; }
+        .flow-thermal .flow-segment.horizontal::after { background:repeating-linear-gradient(to right,transparent 0 7px,var(--thermal) 7px 13px,transparent 13px 22px); background-size:44px 100%; }
+        .manifold-drop { left:50%; top:0; height:21px; }
+        .manifold-run { left:18px; right:50%; top:20px; }
+        .floor-stack { position:relative; border-top:1px solid var(--line-strong); }
+        .floor-rail { left:18px; top:0; bottom:0; z-index:4; }
         .magnetic-grid { transition:min-height .18s ease; }
         .area-tile.layout-docked { border-style:solid; }
         .area-tile.layout-free { outline:1px dotted rgba(255,255,255,.18); outline-offset:-4px; }
