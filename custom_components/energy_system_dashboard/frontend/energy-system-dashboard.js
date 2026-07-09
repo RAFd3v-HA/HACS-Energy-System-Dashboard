@@ -192,16 +192,21 @@ class EnergySystemDashboardPanel extends HTMLElement {
       add(module.charge_energy_entity);
       add(module.discharge_energy_entity);
     }
-    for (const module of config?.heating || []) add(module.energy_entity);
+    for (const module of config?.heating || []) {
+      add(module.energy_entity);
+      add(module.thermal_energy_entity);
+    }
     for (const area of config?.areas || []) {
       add(area.energy_entity);
-      for (const term of area.energy_terms || []) {
-        if (term?.source_type === "entity") add(term.source_id);
+      add(area.thermal_energy_entity);
+      for (const key of ["energy_terms", "thermal_energy_terms"]) {
+        for (const term of area[key] || []) {
+          if (term?.source_type === "entity") add(term.source_id);
+        }
       }
     }
     return ids;
   }
-
   _dailyEnergyKWh(entityId) {
     if (!entityId) return null;
     const cached = this._dailyEnergy[entityId];
@@ -329,7 +334,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       if (["fault", "error", "störung", "alarm"].some((token) => raw.includes(token))) return { cls: "fault", text: String(this._state(module.status_entity)?.state || "FAULT").toUpperCase() };
       return { cls: "active", text: String(this._state(module.status_entity)?.state || "ACTIVE").toUpperCase() };
     }
-    const power = this._powerW(module.power_entity);
+    const power = this._powerW(module.power_entity || module.thermal_power_entity);
     if (power === null) return { cls: "unknown", text: "UNKNOWN" };
     return Math.abs(power) >= 10 ? { cls: "active", text: "ACTIVE" } : { cls: "idle", text: "STANDBY" };
   }
@@ -455,29 +460,68 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _isConfiguredHeating(module) {
-    return Boolean(module && [module.status_entity, module.power_entity, module.energy_entity, module.supply_entity, module.return_entity, module.temperature_entity].some(Boolean));
+    return Boolean(module && [
+      module.status_entity,
+      module.power_entity,
+      module.energy_entity,
+      module.thermal_power_entity,
+      module.thermal_energy_entity,
+      module.supply_entity,
+      module.return_entity,
+      module.temperature_entity,
+    ].some(Boolean));
   }
-
   _isConfiguredBuffer(buffer = this._config?.buffer) {
     return Boolean(buffer?.enabled && Array.isArray(buffer.temperature_entities) && buffer.temperature_entities.some(Boolean));
   }
 
-  _isConfiguredArea(area, config = this._config) {
+  _areaHasMeasure(area, kind) {
     if (!area) return false;
-    if (area.mode !== "calculated") return Boolean(area.power_entity || area.energy_entity);
-    return (area.power_terms || []).some((term) => term?.source_id)
-      || (area.energy_terms || []).some((term) => term?.source_id);
+    const keyMap = {
+      power: ["power_entity", "power_terms"],
+      energy: ["energy_entity", "energy_terms"],
+      thermal_power: ["thermal_power_entity", "thermal_power_terms"],
+      thermal_energy: ["thermal_energy_entity", "thermal_energy_terms"],
+    };
+    const [entityKey, termsKey] = keyMap[kind] || keyMap.power;
+    if (area.mode !== "calculated") return Boolean(area[entityKey]);
+    return (area[termsKey] || []).some((term) => term?.source_id);
   }
 
-  _overviewLevels(config = this._config) {
+  _isConfiguredElectricalArea(area) {
+    return this._areaHasMeasure(area, "power") || this._areaHasMeasure(area, "energy");
+  }
+
+  _isConfiguredThermalArea(area) {
+    return this._areaHasMeasure(area, "thermal_power") || this._areaHasMeasure(area, "thermal_energy");
+  }
+
+  _isConfiguredArea(area) {
+    return this._isConfiguredElectricalArea(area) || this._isConfiguredThermalArea(area);
+  }
+  _overviewLevels(config = this._config, kind = "any") {
+    const isConfigured = (area) => kind === "thermal"
+      ? this._branchHasConfig(area, "thermal", config)
+      : kind === "electric"
+        ? this._branchHasConfig(area, "electric", config)
+        : this._branchHasConfig(area, "any", config);
     const configuredLevelIds = new Set((config?.areas || [])
-      .filter((area) => area.id !== "house" && this._isConfiguredArea(area, config))
+      .filter((area) => area.id !== "house" && isConfigured(area))
       .map((area) => area.level_id));
     return this._buildingLevels(config).filter((level) => configuredLevelIds.has(level.id));
   }
-
   _childrenOf(parentId, config = this._draft || this._config) {
     return (config?.areas || []).filter((area) => area.id !== "house" && area.parent_id === parentId);
+  }
+
+  _moveBranchToLevel(area, levelId, config = this._draft || this._config, stack = new Set()) {
+    if (!area || area.id === "house" || stack.has(area.id)) return;
+    stack.add(area.id);
+    area.level_id = levelId;
+    area.layout_mode = "docked";
+    for (const child of this._childrenOf(area.id, config)) {
+      this._moveBranchToLevel(child, levelId, config, new Set(stack));
+    }
   }
 
   _hierarchyDepth(area, config = this._draft || this._config) {
@@ -528,12 +572,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
       .join("");
   }
 
-  _levelSelector(config = this._config, selectedLevelId = this._viewLevelId, action = "set-view-level") {
-    const levels = this._overviewLevels(config);
+  _levelSelector(config = this._config, selectedLevelId = this._viewLevelId, action = "set-view-level", kind = "any") {
+    const levels = this._overviewLevels(config, kind);
     if (!levels.length) return "";
     return `<div class="view-level-toolbar"><span>STOCKWERK</span><div class="view-level-tabs">${levels.map((level) => `<button class="view-level-tab ${level.id === selectedLevelId ? "active" : ""}" data-action="${action}" data-level-id="${this._esc(level.id)}">${this._esc(level.name)}</button>`).join("")}</div></div>`;
   }
-
   _gridCells(items, minimumSpan = 3) {
     if (!items.length) return "";
     const span = Math.max(minimumSpan, Math.floor(12 / Math.min(items.length, Math.floor(12 / minimumSpan))));
@@ -563,11 +606,19 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _normalizeDockOrder(levelId, config = this._draft || this._config) {
-    this._dockedAreas(levelId, config).forEach((area, index) => { area.dock_order = index; });
+    const roots = this._dockedAreas(levelId, config)
+      .filter((area) => this._isVisualRoot(area, config));
+    roots.forEach((area, index) => { area.dock_order = index; });
+    const parents = (config?.areas || []).filter((area) => area.id === "house" || area.level_id === levelId);
+    for (const parent of parents) {
+      this._sameLevelChildren(parent.id, levelId, config)
+        .filter((area) => this._layoutMode(area) === "docked")
+        .forEach((area, index) => { area.dock_order = index; });
+    }
   }
-
   _dockedLayouts(levelId, config = this._draft || this._config, excludeId = null) {
-    const items = this._dockedAreas(levelId, config, excludeId);
+    const items = this._dockedAreas(levelId, config, excludeId)
+      .filter((area) => this._isVisualRoot(area, config));
     const result = new Map();
     let row = [];
     let rowWidth = 0;
@@ -575,11 +626,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
     const flush = () => {
       if (!row.length) return;
-      const startX = Math.floor((12 - rowWidth) / 2) + 1;
-      const rowHeight = Math.max(...row.map((area) => this._clampLayout(area.layout).h));
+      const rowWidthActual = row.reduce((sum, area) => sum + this._groupSize(area, config).w, 0);
+      const startX = Math.floor((12 - rowWidthActual) / 2) + 1;
+      const rowHeight = Math.max(...row.map((area) => this._groupSize(area, config).h));
       let x = startX;
       for (const area of row) {
-        const size = this._clampLayout(area.layout);
+        const size = this._groupSize(area, config);
         result.set(area.id, { x, y, w: size.w, h: size.h });
         x += size.w;
       }
@@ -589,7 +641,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     };
 
     for (const area of items) {
-      const size = this._clampLayout(area.layout);
+      const size = this._groupSize(area, config);
       if (row.length && rowWidth + size.w > 12) flush();
       row.push(area);
       rowWidth += size.w;
@@ -597,20 +649,21 @@ class EnergySystemDashboardPanel extends HTMLElement {
     flush();
     return result;
   }
-
   _effectiveLayout(area, config = this._draft || this._config) {
     if (!area) return { x: 1, y: 1, w: 3, h: 2 };
     if (area.id === "house") return { x: 1, y: 1, w: 12, h: 2 };
+    if (!this._isVisualRoot(area, config)) return this._clampLayout(area.layout);
     if (this._layoutMode(area) === "docked") {
-      return this._dockedLayouts(area.level_id, config).get(area.id) || this._clampLayout(area.layout);
+      return this._dockedLayouts(area.level_id, config).get(area.id) || this._groupSize(area, config);
     }
-    return this._clampLayout(area.layout);
+    const layout = this._clampLayout(area.layout);
+    const group = this._groupSize(area, config);
+    return { ...layout, w: Math.max(layout.w, group.w), h: Math.max(layout.h, group.h) };
   }
-
   _findFreeLayout(area, desired, config = this._draft || this._config) {
     const start = this._clampLayout(desired);
     const occupied = (config?.areas || [])
-      .filter((candidate) => candidate.id !== "house" && candidate.id !== area.id && candidate.level_id === area.level_id)
+      .filter((candidate) => candidate.id !== "house" && candidate.id !== area.id && candidate.level_id === area.level_id && this._isVisualRoot(candidate, config))
       .map((candidate) => this._effectiveLayout(candidate, config));
     const positions = [];
     const maxRows = Math.max(12, this._levelRows(this._levelById(area.level_id, config), config) + 8);
@@ -648,33 +701,51 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _dockAt(area, levelId, column, row, config = this._draft || this._config) {
-    const ordered = this._dockedAreas(levelId, config, area.id);
+    area.level_id = levelId;
+    area.layout_mode = "docked";
+    if (!this._isVisualRoot(area, config)) {
+      const siblings = this._childrenOf(area.parent_id, config)
+        .filter((item) => item.id !== area.id && item.level_id === levelId)
+        .sort((a, b) => Number(a.dock_order || 0) - Number(b.dock_order || 0));
+      area.dock_order = siblings.length;
+      siblings.push(area);
+      siblings.forEach((item, index) => { item.dock_order = index; });
+      return;
+    }
+    const ordered = this._dockedAreas(levelId, config, area.id)
+      .filter((item) => this._isVisualRoot(item, config));
     const layouts = this._dockedLayouts(levelId, config, area.id);
     const dropKey = row * 100 + column;
     let insertion = ordered.length;
     for (let index = 0; index < ordered.length; index += 1) {
-      const layout = layouts.get(ordered[index].id) || this._clampLayout(ordered[index].layout);
+      const layout = layouts.get(ordered[index].id) || this._groupSize(ordered[index], config);
       const key = (layout.y + layout.h / 2) * 100 + (layout.x + layout.w / 2);
       if (dropKey < key) { insertion = index; break; }
     }
-    area.level_id = levelId;
-    area.layout_mode = "docked";
     ordered.splice(insertion, 0, area);
     ordered.forEach((item, index) => { item.dock_order = index; });
   }
-
   _calculationTerms(area, kind) {
     if (!area) return [];
-    return kind === "energy" ? (area.energy_terms || []) : (area.power_terms || []);
+    const keyMap = {
+      power: "power_terms",
+      energy: "energy_terms",
+      thermal_power: "thermal_power_terms",
+      thermal_energy: "thermal_energy_terms",
+    };
+    return area[keyMap[kind] || "power_terms"] || [];
   }
-
   _calculationDependencies(area, config = this._config) {
     if (!area || area.mode !== "calculated") return [];
-    return [...new Set([...(area.power_terms || []), ...(area.energy_terms || [])]
+    return [...new Set([
+      ...(area.power_terms || []),
+      ...(area.energy_terms || []),
+      ...(area.thermal_power_terms || []),
+      ...(area.thermal_energy_terms || []),
+    ]
       .filter((term) => term?.source_type === "area" && term?.source_id)
       .map((term) => term.source_id))];
   }
-
   _dependsOn(areaId, targetId, config = this._draft || this._config, stack = new Set()) {
     if (!areaId || stack.has(areaId)) return false;
     if (areaId === targetId) return true;
@@ -685,14 +756,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _measureSourceOptions(kind, currentAreaId, term, config = this._draft || this._config) {
     const selected = term?.source_id ? `${term.source_type || "area"}:${term.source_id}` : "";
-    const areaMetric = kind === "energy" ? "ENERGIE HEUTE" : "AKTUELLE LEISTUNG";
+    const isEnergy = kind === "energy" || kind === "thermal_energy";
+    const isThermal = kind === "thermal_power" || kind === "thermal_energy";
+    const areaMetric = isEnergy ? (isThermal ? "THERMISCHE ENERGIE HEUTE" : "ENERGIE HEUTE") : (isThermal ? "THERMISCHE LEISTUNG" : "AKTUELLE LEISTUNG");
     const areaOptions = (config?.areas || [])
       .filter((area) => area.id !== currentAreaId && !this._dependsOn(area.id, currentAreaId, config))
       .map((area) => {
         const value = `area:${area.id}`;
         return `<option value="${this._esc(value)}" ${value === selected ? "selected" : ""}>${this._esc(area.name)} · ${areaMetric}</option>`;
       }).join("");
-    const entityOptions = this._entityList(kind === "energy" ? "energy" : "power")
+    const entityOptions = this._entityList(isEnergy ? "energy" : "power")
       .map((state) => {
         const value = `entity:${state.entity_id}`;
         const unit = state.attributes?.unit_of_measurement ? ` · ${state.attributes.unit_of_measurement}` : "";
@@ -700,7 +773,6 @@ class EnergySystemDashboardPanel extends HTMLElement {
       }).join("");
     return `<option value="">— Messwert auswählen —</option><optgroup label="BEREICHSWERTE">${areaOptions}</optgroup><optgroup label="HOME ASSISTANT ENTITIES">${entityOptions}</optgroup>`;
   }
-
   _parseMeasureSource(value) {
     const raw = String(value || "");
     const index = raw.indexOf(":");
@@ -714,15 +786,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
 
   _measureTermValue(term, kind, config = this._config, stack = new Set()) {
     if (!term?.source_id) return null;
+    const isEnergy = kind === "energy" || kind === "thermal_energy";
     if (term.source_type === "entity") {
-      return kind === "energy" ? this._dailyEnergyKWh(term.source_id) : this._powerW(term.source_id);
+      return isEnergy ? this._dailyEnergyKWh(term.source_id) : this._powerW(term.source_id);
     }
     const sourceArea = this._areaById(term.source_id, config);
-    return kind === "energy"
-      ? this._areaTodayEnergy(sourceArea, config, new Set(stack))
-      : this._areaPower(sourceArea, config, new Set(stack));
+    if (kind === "thermal_energy") return this._areaThermalTodayEnergy(sourceArea, config, new Set(stack));
+    if (kind === "thermal_power") return this._areaThermalPower(sourceArea, config, new Set(stack));
+    if (kind === "energy") return this._areaTodayEnergy(sourceArea, config, new Set(stack));
+    return this._areaPower(sourceArea, config, new Set(stack));
   }
-
   _areaCalculatedValue(area, kind, config = this._config, stack = new Set()) {
     if (!area || stack.has(area.id)) return null;
     const terms = this._calculationTerms(area, kind);
@@ -743,46 +816,132 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return this._areaCalculatedValue(area, "power", config, stack);
   }
 
+  _areaThermalPower(area, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return null;
+    if (area.mode !== "calculated") return this._powerW(area.thermal_power_entity);
+    return this._areaCalculatedValue(area, "thermal_power", config, stack);
+  }
   _areaTodayEnergy(area, config = this._config, stack = new Set()) {
     if (!area || stack.has(area.id)) return null;
     if (area.mode !== "calculated") return this._dailyEnergyKWh(area.energy_entity);
     return this._areaCalculatedValue(area, "energy", config, stack);
   }
 
+  _areaThermalTodayEnergy(area, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return null;
+    if (area.mode !== "calculated") return this._dailyEnergyKWh(area.thermal_energy_entity);
+    return this._areaCalculatedValue(area, "thermal_energy", config, stack);
+  }
   _measureTermLabel(term, kind, config = this._config) {
     if (!term?.source_id) return "?";
     if (term.source_type === "entity") return this._friendly(term.source_id);
     const area = this._areaById(term.source_id, config);
-    return `${area?.name || "?"}${kind === "energy" ? " · HEUTE" : ""}`;
+    const suffix = kind === "energy" ? " · HEUTE" : kind === "thermal_power" ? " · THERMISCH" : kind === "thermal_energy" ? " · THERMISCH HEUTE" : "";
+    return `${area?.name || "?"}${suffix}`;
   }
-
   _areaFormula(area, config = this._config, kind = "power") {
     if (!area || area.mode !== "calculated") {
-      const entityId = kind === "energy" ? area?.energy_entity : area?.power_entity;
+      const entityMap = {
+        power: "power_entity",
+        energy: "energy_entity",
+        thermal_power: "thermal_power_entity",
+        thermal_energy: "thermal_energy_entity",
+      };
+      const entityId = area?.[entityMap[kind] || "power_entity"];
       return entityId ? `DIREKT · ${this._friendly(entityId)}` : "NICHT KONFIGURIERT";
     }
     const terms = this._calculationTerms(area, kind);
-    if (!terms.length) return kind === "energy" ? "ENERGIE-BERECHNUNG FEHLT" : "LEISTUNGS-BERECHNUNG FEHLT";
+    if (!terms.length) return kind.includes("energy") ? "ENERGIE-BERECHNUNG FEHLT" : "LEISTUNGS-BERECHNUNG FEHLT";
     return terms.map((term, index) => `${index === 0 && term.op !== "-" ? "" : term.op === "-" ? "− " : "+ "}${this._measureTermLabel(term, kind, config)}`).join(" ");
   }
-
-  _leafAreas(config = this._config) {
-    const configured = (config?.areas || []).filter((area) => area.id !== "house" && this._isConfiguredArea(area, config));
-    const configuredIds = new Set(configured.map((area) => area.id));
-    const leaves = configured.filter((area) => !configured.some((child) => child.parent_id === area.id && configuredIds.has(child.id)));
-    if (leaves.length) return leaves;
-    const house = this._areaById("house", config);
-    return house && this._isConfiguredArea(house, config) ? [house] : [];
+  _isVisualRoot(area, config = this._config) {
+    if (!area || area.id === "house") return false;
+    if (!area.parent_id || area.parent_id === "house") return true;
+    const parent = this._areaById(area.parent_id, config);
+    return !parent || parent.level_id !== area.level_id;
   }
 
+  _visualRootAreas(levelId, config = this._config) {
+    return (config?.areas || [])
+      .filter((area) => area.id !== "house" && area.level_id === levelId && this._isVisualRoot(area, config))
+      .sort((a, b) => Number(a.dock_order || 0) - Number(b.dock_order || 0) || String(a.name || "").localeCompare(String(b.name || ""), "de"));
+  }
+
+  _sameLevelChildren(parentId, levelId, config = this._config) {
+    return this._childrenOf(parentId, config)
+      .filter((area) => area.level_id === levelId)
+      .sort((a, b) => Number(a.dock_order || 0) - Number(b.dock_order || 0) || String(a.name || "").localeCompare(String(b.name || ""), "de"));
+  }
+
+  _branchHasConfig(area, kind = "any", config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return false;
+    stack.add(area.id);
+    const own = kind === "thermal" ? this._isConfiguredThermalArea(area)
+      : kind === "electric" ? this._isConfiguredElectricalArea(area)
+      : this._isConfiguredArea(area);
+    if (own) return true;
+    return this._sameLevelChildren(area.id, area.level_id, config)
+      .some((child) => this._branchHasConfig(child, kind, config, new Set(stack)));
+  }
+
+  _branchValue(area, kind, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return null;
+    const getter = kind === "energy" ? (item) => this._areaTodayEnergy(item, config, new Set(stack))
+      : kind === "thermal_power" ? (item) => this._areaThermalPower(item, config, new Set(stack))
+      : kind === "thermal_energy" ? (item) => this._areaThermalTodayEnergy(item, config, new Set(stack))
+      : (item) => this._areaPower(item, config, new Set(stack));
+    if (this._areaHasMeasure(area, kind)) return getter(area);
+    stack.add(area.id);
+    const values = this._sameLevelChildren(area.id, area.level_id, config)
+      .map((child) => this._branchValue(child, kind, config, new Set(stack)))
+      .filter((value) => value !== null && Number.isFinite(value));
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  }
+
+  _levelValue(level, kind, config = this._config) {
+    if (!level) return null;
+    const values = this._visualRootAreas(level.id, config)
+      .map((area) => this._branchValue(area, kind, config))
+      .filter((value) => value !== null && Number.isFinite(value));
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  }
+
+  _levelPower(level, config = this._config) { return this._levelValue(level, "power", config); }
+  _levelTodayEnergy(level, config = this._config) { return this._levelValue(level, "energy", config); }
+  _levelThermalPower(level, config = this._config) { return this._levelValue(level, "thermal_power", config); }
+  _levelThermalTodayEnergy(level, config = this._config) { return this._levelValue(level, "thermal_energy", config); }
+
+  _totalLevelValue(kind, config = this._config) {
+    const viewKind = kind.startsWith("thermal") ? "thermal" : "electric";
+    const values = this._overviewLevels(config, viewKind)
+      .map((level) => this._levelValue(level, kind, config))
+      .filter((value) => value !== null && Number.isFinite(value));
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  }
   _levelRows(level, config = this._config) {
     if (!level) return 2;
-    const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id);
-    if (!areas.length) return 2;
-    return Math.max(2, ...areas.map((area) => {
+    const roots = this._visualRootAreas(level.id, config);
+    if (!roots.length) return 2;
+    return Math.max(2, ...roots.map((area) => {
       const layout = this._effectiveLayout(area, config);
       return Number(layout.y || 1) + Number(layout.h || 2) - 1;
     }));
+  }
+  _groupSize(area, config = this._draft || this._config) {
+    const base = this._clampLayout(area?.layout);
+    const children = area ? this._sameLevelChildren(area.id, area.level_id, config) : [];
+    if (!children.length) return base;
+    const directRows = Math.ceil(children.length / 3);
+    const nestedExtra = Math.max(0, ...children.map((child) => this._sameLevelChildren(child.id, child.level_id, config).length ? 1 : 0));
+    return { ...base, w: Math.max(base.w, 4), h: Math.max(base.h, 3 + directRows * 2 + nestedExtra * 2) };
+  }
+
+  _flowPhase(duration = 1.8) {
+    return `-${((Date.now() / 1000) % duration).toFixed(3)}s`;
+  }
+
+  _flowWire(kind = "electric", height = 36) {
+    return `<div class="wire vertical active flow-${kind}" style="height:${height}px;--flow-phase:${this._flowPhase(1.8)}"></div>`;
   }
 
   _renderLoading() {
@@ -906,57 +1065,57 @@ class EnergySystemDashboardPanel extends HTMLElement {
     this._syncLayoutState(config);
     const electrical = this._electricalNodes();
     const configuredHeating = (config.heating || []).filter((module) => this._isConfiguredHeating(module));
-    const conversions = configuredHeating.filter((module) => module.power_entity).map((module) => this._renderHeatingNode(module));
-    const thermal = configuredHeating.filter((module) => !module.power_entity).map((module) => this._renderHeatingNode(module));
+    const conversions = configuredHeating.filter((module) => module.power_entity).map((module) => this._renderHeatingNode(module, "electric"));
+    const thermalSources = configuredHeating.filter((module) => module.target === "buffer").map((module) => this._renderHeatingNode(module, "thermal"));
+    const roomSources = configuredHeating.filter((module) => module.target !== "buffer").map((module) => this._renderHeatingNode(module, "thermal"));
     const buffer = config.buffer || {};
-    const hasBus = this._leafAreas(config).length > 0;
-    const hasThermal = thermal.length > 0 || this._isConfiguredBuffer(buffer);
-    const hasBuilding = this._overviewLevels(config).length > 0 || this._isConfiguredArea(this._houseArea(config), config);
+    const electricLevels = this._overviewLevels(config, "electric");
+    const thermalLevels = this._overviewLevels(config, "thermal");
     const sections = [];
-    if (electrical.length || hasBus) {
+
+    if (electrical.length || electricLevels.length) {
       sections.push(`<section class="system-zone electrical-zone">
         <div class="section-label split-label"><span>01 / ELEKTRISCH</span><strong>${this._housePowerLabel()}</strong></div>
-        ${electrical.length ? `<div class="system-grid module-board">${this._gridCells(electrical)}</div><div class="wire vertical active"></div>` : ""}
-        ${hasBus ? `<div class="bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div>` : ""}
+        ${electrical.length ? `<div class="system-grid module-board">${this._gridCells(electrical)}</div>${this._flowWire("electric")}` : ""}
+        ${electricLevels.length ? `<div class="bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div>${this._flowWire("electric", 28)}${this._renderBuildingStack(config, null, false, "electric")}` : ""}
       </section>`);
     }
+
     if (conversions.length) {
       sections.push(`<div class="conversion-band"><span>02 / ENERGIEWANDLUNG</span><strong>ELEKTRISCH → WÄRME</strong></div><div class="system-grid module-board conversion-board">${this._gridCells(conversions)}</div>`);
     }
-    if (hasThermal) {
-      sections.push(`<section class="system-zone thermal-zone">
-        <div class="section-label split-label"><span>03 / THERMISCH</span><strong>WÄRMESYSTEM</strong></div>
-        ${thermal.length ? `<div class="system-grid module-board thermal-board">${this._gridCells(thermal)}</div>${this._isConfiguredBuffer(buffer) ? `<div class="thermal-arrow">↓</div>` : ""}` : ""}
-        ${this._isConfiguredBuffer(buffer) ? `<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div>` : ""}
-      </section>`);
-    }
-    if (hasBuilding) {
-      sections.push(`<section class="system-zone building-zone">
-        <div class="section-label split-label"><span>04 / GEBÄUDE</span><strong>STOCKWERK-REFERENZ</strong></div>
-        ${this._renderBuildingStack(config, null, true)}
-      </section>`);
-    }
-    return `<div class="system-note">GESAMTSYSTEM · ELEKTRISCH → ENERGIEWANDLUNG → THERMISCH → GEBÄUDE</div>${sections.join("") || this._empty("Noch kein Systemmodul konfiguriert.")}`;
-  }
 
+    if (thermalSources.length || roomSources.length || this._isConfiguredBuffer(buffer) || thermalLevels.length) {
+      sections.push(`<section class="system-zone thermal-zone">
+        <div class="section-label split-label"><span>03 / THERMISCH</span><strong>${this._thermalLoadLabel()}</strong></div>
+        ${thermalSources.length ? `<div class="system-grid module-board thermal-board">${this._gridCells(thermalSources)}</div>${this._flowWire("thermal", 28)}` : ""}
+        ${this._isConfiguredBuffer(buffer) ? `<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div>` : ""}
+        ${thermalLevels.length ? `${this._flowWire("thermal", 28)}<div class="distribution-box thermal-distribution"><span>THERMISCHE VERTEILUNG</span><strong>${this._thermalLoadLabel()}</strong></div>${this._flowWire("thermal", 28)}${this._renderBuildingStack(config, null, false, "thermal")}` : ""}
+        ${roomSources.length ? `<div class="section-label room-label">DIREKTE RAUMWÄRME / SONSTIGE WÄRMESENKEN</div><div class="system-grid module-board thermal-board">${this._gridCells(roomSources)}</div>` : ""}
+      </section>`);
+    }
+
+    return `<div class="system-note">GESAMTSYSTEM · ELEKTRISCHE UND THERMISCHE LASTEN JE STOCKWERK</div>${sections.join("") || this._empty("Noch kein Systemmodul konfiguriert.")}`;
+  }
   _renderElectric() {
     const config = this._config;
     this._syncLayoutState(config);
     const topNodes = this._electricalNodes();
+    const levels = this._overviewLevels(config, "electric");
     return `
-      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · AKTUELLE LEISTUNG + ENERGIE HEUTE</div>
-      ${topNodes.length ? `<div class="system-grid module-board">${this._gridCells(topNodes)}</div><div class="wire vertical active"></div>` : ""}
-      <div class="bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div>
-      <div class="wire vertical active"></div>
-      ${this._renderBuildingStack(config, null, true)}`;
+      <div class="system-note">ELEKTRISCHES EINLINIENSCHEMA · VERTEILUNG = SUMME DER STOCKWERKSLASTEN</div>
+      ${topNodes.length ? `<div class="system-grid module-board">${this._gridCells(topNodes)}</div>${this._flowWire("electric")}` : ""}
+      ${levels.length ? `<div class="bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div>${this._flowWire("electric", 28)}${this._renderBuildingStack(config, null, false, "electric")}` : this._empty("Noch keine elektrischen Bereiche konfiguriert.")}`;
   }
-
   _housePowerLabel() {
-    const values = this._leafAreas().map((area) => this._areaPower(area)).filter((value) => value !== null && Number.isFinite(value));
-    if (!values.length) return "KEIN MESSWERT";
-    return this._formatPowerW(values.reduce((sum, value) => sum + value, 0));
+    const total = this._totalLevelValue("power", this._config);
+    return total === null ? "KEIN MESSWERT" : this._formatPowerW(total);
   }
 
+  _thermalLoadLabel() {
+    const total = this._totalLevelValue("thermal_power", this._config);
+    return total === null ? "KEIN MESSWERT" : this._formatPowerW(total);
+  }
   _renderAreaNode(area) {
     const power = this._areaPower(area);
     const today = this._areaTodayEnergy(area);
@@ -989,20 +1148,20 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const toBuffer = heating.filter((module) => module.target === "buffer");
     const toRoom = heating.filter((module) => module.target !== "buffer");
     const buffer = this._config.buffer || {};
+    const levels = this._overviewLevels(this._config, "thermal");
 
-    const bufferNodes = toBuffer.map((module) => this._renderHeatingNode(module));
-    const roomNodes = toRoom.map((module) => this._renderHeatingNode(module));
+    const bufferNodes = toBuffer.map((module) => this._renderHeatingNode(module, "thermal"));
+    const roomNodes = toRoom.map((module) => this._renderHeatingNode(module, "thermal"));
     return `
-      <div class="system-note">THERMISCHES ANLAGENFLIESSBILD · GLEICHES TECHNISCHES 12-SPALTEN-RASTER</div>
-      <div class="section-label">WÄRMEERZEUGER / PUFFER</div>
-      ${bufferNodes.length ? `<div class="system-grid module-board thermal-board">${this._gridCells(bufferNodes)}</div>` : ""}
-      ${bufferNodes.length && this._isConfiguredBuffer(buffer) ? `<div class="thermal-arrow">↓</div>` : ""}
-      ${this._isConfiguredBuffer(buffer) ? `<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div><div class="thermal-arrow">↓</div><div class="distribution-box"><span>HEIZVERTEILUNG</span><strong>THERMAL LOAD</strong></div>` : ""}
+      <div class="system-note">THERMISCHES ANLAGENFLIESSBILD · VERTEILUNG = SUMME DER THERMISCHEN STOCKWERKSLASTEN</div>
+      ${bufferNodes.length ? `<div class="section-label">WÄRMEERZEUGER / PUFFER</div><div class="system-grid module-board thermal-board">${this._gridCells(bufferNodes)}</div>` : ""}
+      ${bufferNodes.length && this._isConfiguredBuffer(buffer) ? this._flowWire("thermal", 28) : ""}
+      ${this._isConfiguredBuffer(buffer) ? `<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div>` : ""}
+      ${levels.length ? `${this._flowWire("thermal", 28)}<div class="distribution-box thermal-distribution"><span>THERMISCHE VERTEILUNG</span><strong>${this._thermalLoadLabel()}</strong></div>${this._flowWire("thermal", 28)}${this._renderBuildingStack(this._config, null, false, "thermal")}` : ""}
       ${roomNodes.length ? `<div class="section-label room-label">DIREKTE RAUMWÄRME / SONSTIGE WÄRMESENKEN</div><div class="system-grid module-board thermal-board">${this._gridCells(roomNodes)}</div>` : ""}
-      ${!bufferNodes.length && !roomNodes.length && !this._isConfiguredBuffer(buffer) ? this._empty("Noch kein thermisches Modul konfiguriert.") : ""}`;
+      ${!bufferNodes.length && !roomNodes.length && !this._isConfiguredBuffer(buffer) && !levels.length ? this._empty("Noch kein thermisches Modul oder keine thermische Bereichslast konfiguriert.") : ""}`;
   }
-
-  _renderHeatingNode(module) {
+  _renderHeatingNode(module, context = "electric") {
     const status = this._moduleStatus(module);
     const typeCodes = {
       heatpump: "HP",
@@ -1014,21 +1173,25 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (module.supply_entity) details.push(["VL", this._formatTemp(this._temperature(module.supply_entity))]);
     if (module.return_entity) details.push(["RL", this._formatTemp(this._temperature(module.return_entity))]);
     if (module.temperature_entity) details.push(["TEMP", this._formatTemp(this._temperature(module.temperature_entity))]);
-    if (module.power_entity) details.push(["POWER", this._formatPowerW(this._powerW(module.power_entity))]);
-    if (module.energy_entity) details.push(["HEUTE", this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity)), "daily-value"]);
+    if (module.power_entity) details.push(["EL. POWER", this._formatPowerW(this._powerW(module.power_entity))]);
+    if (module.energy_entity) details.push(["EL. HEUTE", this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity)), "daily-value"]);
+    if (module.thermal_power_entity) details.push(["TH. POWER", this._formatPowerW(this._powerW(module.thermal_power_entity))]);
+    if (module.thermal_energy_entity) details.push(["TH. HEUTE", this._formatEnergyKWh(this._dailyEnergyKWh(module.thermal_energy_entity)), "daily-value"]);
 
+    const thermalMain = module.thermal_power_entity ? this._formatPowerW(this._powerW(module.thermal_power_entity)) : null;
+    const electricMain = module.power_entity ? this._formatPowerW(this._powerW(module.power_entity)) : null;
+    const main = context === "thermal" ? (thermalMain || details[0]?.[1] || "—") : (electricMain || thermalMain || details[0]?.[1] || "—");
     return this._node({
       code: typeCodes[module.type] || "HEAT",
       name: module.name || "Wärmeerzeuger",
-      main: module.power_entity ? this._formatPowerW(this._powerW(module.power_entity)) : (details[0]?.[1] || "—"),
+      main,
       state: status.text,
       status: status.cls,
       custom: details.map(([key, value, cls]) => `<div class="mini-line ${cls || ""}"><span>${key}</span><strong>${this._esc(value)}</strong></div>`).join(""),
       metaLeft: module.target === "buffer" ? "→ BUFFER" : "→ ROOM",
-      metaRight: module.status_entity ? "STATUS LINK" : "POWER STATE",
+      metaRight: context === "thermal" ? "THERMAL" : "ELECTRIC",
     });
   }
-
   _renderBuffer(buffer) {
     const sensors = buffer.temperature_entities || [];
     const rows = sensors.map((entityId, index) => {
@@ -1049,10 +1212,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
       ? this._buildingLevels(this._config).find((level) => String(level.name || "").toLowerCase() === String(this._cardConfig.default_floor).toLowerCase())
       : null;
     return `
-      <div class="system-note">GEBÄUDEPLAN · SEITLICHE STOCKWERK-REFERENZ · M = GEMESSEN · C = BERECHNET</div>
-      ${this._renderBuildingStack(this._config, fixedLevel?.id || null, true)}`;
+      <div class="system-note">GEBÄUDEPLAN · SEITLICHE STOCKWERK-REFERENZ · PARENT GROSS · CHILDREN KOMPAKT</div>
+      ${this._renderBuildingStack(this._config, fixedLevel?.id || null, true, "electric")}`;
   }
-
   _renderLevelPlan(level, config = this._config, interactive = false, compactHeader = false) {
     const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id);
     const rows = this._levelRows(level, config);
@@ -1066,29 +1228,31 @@ class EnergySystemDashboardPanel extends HTMLElement {
       </section>`;
   }
 
-  _renderOverviewFloorGroup(level, config = this._config) {
-    const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id && this._isConfiguredArea(area, config));
-    if (!areas.length) return "";
-    const rows = Math.max(2, ...areas.map((area) => {
+  _renderOverviewFloorGroup(level, config = this._config, kind = "electric") {
+    const roots = this._visualRootAreas(level.id, config)
+      .filter((area) => this._branchHasConfig(area, kind, config));
+    if (!roots.length) return "";
+    const rows = Math.max(2, ...roots.map((area) => {
       const layout = this._effectiveLayout(area, config);
       return Number(layout.y || 1) + Number(layout.h || 2) - 1;
     }));
+    const load = kind === "thermal" ? this._levelThermalPower(level, config) : this._levelPower(level, config);
+    const today = kind === "thermal" ? this._levelThermalTodayEnergy(level, config) : this._levelTodayEnergy(level, config);
     return `
-      <section class="editor-floor-group overview-floor-group">
-        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span>${areas.length}</span></aside>
+      <section class="editor-floor-group overview-floor-group flow-floor-group flow-${kind}">
+        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span class="floor-load">${this._formatPowerW(load)}</span><small class="daily-value">${this._formatEnergyKWh(today)}</small></aside>
         <div class="floor-layout-body">
-          <div class="floor-layout-meta"><span>STOCKWERK</span><strong>${this._esc(level.name)}</strong><em>${areas.length} KONFIGURIERT</em></div>
+          <div class="floor-layout-meta"><span>${kind === "thermal" ? "THERMISCHE EBENE" : "ELEKTRISCHE EBENE"}</span><strong>${this._esc(level.name)}</strong><em>${this._formatPowerW(load)} TEILLAST</em></div>
           <div class="level-grid readonly" style="--rows:${rows}">
-            ${areas.map((area) => this._renderAreaTile(area, config, false)).join("")}
+            ${roots.map((area) => this._renderAreaGroup(area, config, false, kind)).join("")}
           </div>
         </div>
       </section>`;
   }
-
-  _renderBuildingStack(config = this._config, fixedLevelId = null, includeHouse = true) {
+  _renderBuildingStack(config = this._config, fixedLevelId = null, includeHouse = true, kind = "electric") {
     const house = this._houseArea(config);
-    const allLevels = this._overviewLevels(config);
-    const houseHtml = includeHouse && house && this._isConfiguredArea(house, config) ? this._renderHouseTile(house, config, false) : "";
+    const allLevels = this._overviewLevels(config, kind);
+    const houseHtml = includeHouse && kind === "electric" && house && this._isConfiguredElectricalArea(house) ? this._renderHouseTile(house, config, false) : "";
     let levels = fixedLevelId ? allLevels.filter((level) => level.id === fixedLevelId) : allLevels;
     let selector = "";
     if (this._cardConfig && !fixedLevelId) {
@@ -1098,34 +1262,33 @@ class EnergySystemDashboardPanel extends HTMLElement {
       const current = allLevels.find((level) => level.id === this._viewLevelId);
       const selected = requested || current || allLevels[0];
       if (this._cardConfig.floor_selector !== false && selected) {
-        selector = this._levelSelector(config, selected.id);
+        selector = this._levelSelector(config, selected.id, "set-view-level", kind);
         levels = [selected];
       } else if (requested) {
         levels = [requested];
       }
     }
-    const floors = levels.map((level) => this._renderOverviewFloorGroup(level, config)).join("");
-    return `<div class="building-stack overview-building-stack">${houseHtml}${selector}${floors || this._empty("Noch keine konfigurierten Bereiche vorhanden.")}</div>`;
+    const floors = levels.map((level) => this._renderOverviewFloorGroup(level, config, kind)).join("");
+    return `<div class="building-stack overview-building-stack distribution-flow-stack flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}">${houseHtml}${selector}${floors || this._empty(kind === "thermal" ? "Noch keine thermischen Bereichslasten vorhanden." : "Noch keine elektrischen Bereiche vorhanden.")}</div>`;
   }
-
   _renderEditorFloorGroup(level, config = this._draft || this._config) {
     const areas = (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id);
+    const roots = this._visualRootAreas(level.id, config);
     const rows = Math.max(3, this._levelRows(level, config));
-    const docked = areas.filter((area) => this._layoutMode(area) === "docked").length;
-    const free = areas.length - docked;
+    const docked = roots.filter((area) => this._layoutMode(area) === "docked").length;
+    const free = roots.length - docked;
     return `
       <section class="editor-floor-group" data-floor-group="${this._esc(level.id)}">
-        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span>${areas.length}</span></aside>
+        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span class="floor-load">${this._formatPowerW(this._levelPower(level, config))}</span><small>${areas.length} BEREICHE</small></aside>
         <div class="floor-layout-body">
-          <div class="floor-layout-meta"><span>STOCKWERK</span><strong>${this._esc(level.name)}</strong><em>${docked} DOCKED · ${free} FREE</em></div>
+          <div class="floor-layout-meta"><span>STOCKWERK</span><strong>${this._esc(level.name)}</strong><em>${docked} ROOT DOCKED · ${free} ROOT FREE</em></div>
           <div class="level-grid layout-grid magnetic-grid" data-layout-grid data-level-id="${this._esc(level.id)}" style="--rows:${rows}">
-            ${areas.map((area) => this._renderAreaTile(area, config, true)).join("")}
+            ${roots.map((area) => this._renderAreaGroup(area, config, true, "electric")).join("")}
             ${!areas.length ? `<div class="layout-empty">BEREICH HINZUFÜGEN UND DIESEM STOCKWERK ZUWEISEN</div>` : ""}
           </div>
         </div>
       </section>`;
   }
-
   _renderHouseTile(house, config = this._config, interactive = false) {
     const selected = interactive && house.id === this._selectedAreaId;
     const tag = interactive ? "button" : "article";
@@ -1138,29 +1301,38 @@ class EnergySystemDashboardPanel extends HTMLElement {
     </${tag}>`;
   }
 
-  _renderAreaTile(area, config = this._config, interactive = false) {
-    const power = this._areaPower(area, config);
-    const today = this._areaTodayEnergy(area, config);
+  _renderAreaGroup(area, config = this._config, interactive = false, kind = "electric", depth = 0, nested = false) {
+    const children = this._sameLevelChildren(area.id, area.level_id, config)
+      .filter((child) => interactive || this._branchHasConfig(child, kind, config));
     const layout = this._effectiveLayout(area, config);
+    const position = nested ? "" : `style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}"`;
+    return `<div class="area-group ${nested ? "nested-area-group" : "root-area-group"} depth-${Math.min(depth, 3)}" data-area-group="${this._esc(area.id)}" ${position}>
+      ${this._renderAreaTile(area, config, interactive, kind, depth)}
+      ${children.length ? `<div class="area-child-grid" data-child-drop-parent="${this._esc(area.id)}">${children.map((child) => this._renderAreaGroup(child, config, interactive, kind, depth + 1, true)).join("")}</div>` : ""}
+    </div>`;
+  }
+
+  _renderAreaTile(area, config = this._config, interactive = false, kind = "electric", depth = 0) {
+    const power = kind === "thermal" ? this._areaThermalPower(area, config) : this._areaPower(area, config);
+    const today = kind === "thermal" ? this._areaThermalTodayEnergy(area, config) : this._areaTodayEnergy(area, config);
     const selected = interactive && area.id === this._selectedAreaId;
     const tag = interactive ? "button" : "article";
     const attrs = interactive ? `type="button" draggable="true" data-drag-area="${this._esc(area.id)}" data-action="select-area" data-area-id="${this._esc(area.id)}"` : "";
-    const children = this._childrenOf(area.id, config);
+    const children = this._sameLevelChildren(area.id, area.level_id, config);
     const parent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, config) : null;
-    const depth = this._hierarchyDepth(area, config);
     const hierarchyClass = children.length ? " hierarchy-parent" : parent ? ` hierarchy-child hierarchy-depth-${Math.min(depth, 3)}` : " hierarchy-root";
     const relation = children.length
       ? `<div class="area-hierarchy-meta"><span>PARENT</span><strong>${children.length} UNTERBEREICH${children.length === 1 ? "" : "E"}</strong></div>`
       : parent ? `<div class="area-parent-ref">↳ ${this._esc(parent.name)}</div>` : "";
-    return `<${tag} class="area-tile ${area.mode === "calculated" ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs} style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}">
+    const formulaKind = kind === "thermal" ? "thermal_power" : "power";
+    return `<${tag} class="area-tile ${kind === "thermal" ? "thermal-area" : "electric-area"} ${area.mode === "calculated" ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs}>
       <div class="area-tile-head"><span>${area.mode === "calculated" ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
       ${relation}
       <div class="area-tile-power">${this._formatPowerW(power)}</div>
       <div class="area-tile-energy daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>
-      <div class="area-tile-formula">${this._esc(this._areaFormula(area, config))}</div>
+      <div class="area-tile-formula">${this._esc(this._areaFormula(area, config, formulaKind))}</div>
     </${tag}>`;
   }
-
   _renderConfig() {
     if (!this._draft) this._draft = this._clone(this._config);
     const d = this._draft;
@@ -1247,6 +1419,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
               ${this._field("Status", `<select data-array="heating" data-index="${index}" data-field="status_entity">${this._entityOptions("any", module.status_entity)}</select>`)}
               ${this._field("Elektrische Leistung", `<select data-array="heating" data-index="${index}" data-field="power_entity">${this._entityOptions("power", module.power_entity)}</select>`)}
               ${this._field("Elektrische Energie / kWh", `<select data-array="heating" data-index="${index}" data-field="energy_entity">${this._entityOptions("energy", module.energy_entity)}</select>`)}
+              ${this._field("Thermische Leistung", `<select data-array="heating" data-index="${index}" data-field="thermal_power_entity">${this._entityOptions("power", module.thermal_power_entity)}</select>`)}
+              ${this._field("Thermische Energie / kWh", `<select data-array="heating" data-index="${index}" data-field="thermal_energy_entity">${this._entityOptions("energy", module.thermal_energy_entity)}</select>`)}
               ${this._field("Vorlauf", `<select data-array="heating" data-index="${index}" data-field="supply_entity">${this._entityOptions("temperature", module.supply_entity)}</select>`)}
               ${this._field("Rücklauf", `<select data-array="heating" data-index="${index}" data-field="return_entity">${this._entityOptions("temperature", module.return_entity)}</select>`)}
               ${this._field("Haupttemperatur / Kessel / Brennraum", `<select data-array="heating" data-index="${index}" data-field="temperature_entity">${this._entityOptions("temperature", module.temperature_entity)}</select>`)}
@@ -1254,7 +1428,6 @@ class EnergySystemDashboardPanel extends HTMLElement {
         </div>
       </section>`;
   }
-
   _configBufferSection(d) {
     const selectedTemps = d.buffer?.temperature_entities || [];
     return `
@@ -1289,19 +1462,35 @@ class EnergySystemDashboardPanel extends HTMLElement {
       </section>`;
   }
 
+  _termKey(kind) {
+    return {
+      power: "power_terms",
+      energy: "energy_terms",
+      thermal_power: "thermal_power_terms",
+      thermal_energy: "thermal_energy_terms",
+    }[kind] || "power_terms";
+  }
+
   _renderMeasureCalculation(area, kind, d) {
     const terms = this._calculationTerms(area, kind);
-    const title = kind === "energy" ? "ENERGIE HEUTE" : "AKTUELLE LEISTUNG";
-    const value = kind === "energy" ? this._areaTodayEnergy(area, d) : this._areaPower(area, d);
-    const formatted = kind === "energy" ? this._formatEnergyKWh(value) : this._formatPowerW(value);
-    return `<div class="inspector-section measure-calculation">
-      <div class="inspector-label">${title} BERECHNEN</div>
+    const titleMap = {
+      power: "AKTUELLE ELEKTRISCHE LEISTUNG",
+      energy: "ELEKTRISCHE ENERGIE HEUTE",
+      thermal_power: "AKTUELLE THERMISCHE LEISTUNG",
+      thermal_energy: "THERMISCHE ENERGIE HEUTE",
+    };
+    const value = kind === "energy" ? this._areaTodayEnergy(area, d)
+      : kind === "thermal_power" ? this._areaThermalPower(area, d)
+      : kind === "thermal_energy" ? this._areaThermalTodayEnergy(area, d)
+      : this._areaPower(area, d);
+    const formatted = kind.includes("energy") ? this._formatEnergyKWh(value) : this._formatPowerW(value);
+    return `<div class="inspector-section measure-calculation ${kind.startsWith("thermal") ? "thermal-calculation" : ""}">
+      <div class="inspector-label">${titleMap[kind] || "MESSWERT"} BERECHNEN</div>
       ${terms.map((term, index) => `<div class="calc-row measure"><select data-area-id="${this._esc(area.id)}" data-calc-kind="${kind}" data-calc-index="${index}" data-calc-field="op"><option value="+" ${term.op !== "-" ? "selected" : ""}>+</option><option value="-" ${term.op === "-" ? "selected" : ""}>−</option></select><select data-area-id="${this._esc(area.id)}" data-calc-kind="${kind}" data-calc-index="${index}" data-calc-field="source">${this._measureSourceOptions(kind, area.id, term, d)}</select><button class="danger" data-action="remove-measure-term" data-area-id="${this._esc(area.id)}" data-kind="${kind}" data-index="${index}">×</button></div>`).join("")}
       <button class="small-action" data-action="add-measure-term" data-area-id="${this._esc(area.id)}" data-kind="${kind}">+ MESSWERT</button>
       <div class="measure-preview"><span>ERGEBNIS</span><strong>${formatted}</strong><small>${this._esc(this._areaFormula(area, d, kind))}</small></div>
     </div>`;
   }
-
   _renderHierarchyEditor(area, d) {
     const isHouse = area.id === "house";
     const children = this._childrenOf(area.id, d);
@@ -1323,8 +1512,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const layout = this._effectiveLayout(area, d);
     const levelOptions = this._floorSelectOptions(area, d);
     const calculation = area.mode === "calculated"
-      ? `${this._renderMeasureCalculation(area, "power", d)}${this._renderMeasureCalculation(area, "energy", d)}`
-      : `${this._field("Aktuelle Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>`)}${this._field("Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>`)}`;
+      ? `${this._renderMeasureCalculation(area, "power", d)}${this._renderMeasureCalculation(area, "energy", d)}${this._renderMeasureCalculation(area, "thermal_power", d)}${this._renderMeasureCalculation(area, "thermal_energy", d)}`
+      : `<div class="inspector-section measure-section"><div class="inspector-label">ELEKTRISCHE MESSWERTE</div>${this._field("Aktuelle Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="power_entity">${this._entityOptions("power", area.power_entity)}</select>`)}${this._field("Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="energy_entity">${this._entityOptions("energy", area.energy_entity)}</select>`)}</div><div class="inspector-section measure-section thermal-calculation"><div class="inspector-label">THERMISCHE MESSWERTE</div>${this._field("Thermische Leistung", `<select data-area-id="${this._esc(area.id)}" data-area-field="thermal_power_entity">${this._entityOptions("power", area.thermal_power_entity)}</select>`)}${this._field("Thermischer Energiezähler Gesamtstand", `<select data-area-id="${this._esc(area.id)}" data-area-field="thermal_energy_entity">${this._entityOptions("energy", area.thermal_energy_entity)}</select>`)}</div>`;
     return `
       <div class="inspector-head"><span>${isHouse ? "ROOT / HOUSE" : area.mode === "calculated" ? "C / CALCULATED" : "M / MEASURED"}</span><button class="danger" data-action="remove-area" data-area-id="${this._esc(area.id)}" ${isHouse || (d.areas || []).length <= 1 ? "disabled" : ""}>REMOVE</button></div>
       ${this._field("Bereichsname", `<input data-area-id="${this._esc(area.id)}" data-area-field="name" value="${this._esc(area.name)}">`)}
@@ -1336,7 +1525,6 @@ class EnergySystemDashboardPanel extends HTMLElement {
         ${["w", "h"].map((key) => `<label><span>${key === "w" ? "BREITE" : "HÖHE"}</span><select data-area-id="${this._esc(area.id)}" data-layout-field="${key}">${Array.from({ length: key === "w" ? 6 : 4 }, (_, index) => index + 1).map((value) => `<option value="${value}" ${Number(layout[key] || 1) === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>`).join("")}
       </div><button class="small-action" type="button" data-action="toggle-layout-mode" data-area-id="${this._esc(area.id)}">${this._layoutMode(area) === "docked" ? "KACHEL FREI LÖSEN" : "KACHEL ANDOCKEN"}</button></div>` : ""}`;
   }
-
   _field(label, control) {
     return `<label class="field"><span>${this._esc(label)}</span>${control}</label>`;
   }
@@ -1375,9 +1563,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
       if (area && name) {
         const floor = this._ensureFloor(name, this._draft);
         if (floor) {
-          area.level_id = floor.id;
-          area.layout_mode = "docked";
-          area.dock_order = this._dockedAreas(floor.id, this._draft, area.id).length;
+          this._moveBranchToLevel(area, floor.id, this._draft);
+          area.dock_order = this._visualRootAreas(floor.id, this._draft).filter((item) => item.id !== area.id).length;
           this._normalizeDockOrder(floor.id, this._draft);
           this._layoutLevelId = floor.id;
         }
@@ -1414,7 +1601,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
     if (action === "add-heating") {
-      this._draft.heating.push({ id: this._id("heat"), type: "heatpump", name: "Wärmepumpe", target: "buffer", status_entity: "", power_entity: "", energy_entity: "", supply_entity: "", return_entity: "", temperature_entity: "" });
+      this._draft.heating.push({ id: this._id("heat"), type: "heatpump", name: "Wärmepumpe", target: "buffer", status_entity: "", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", supply_entity: "", return_entity: "", temperature_entity: "" });
       this._render();
       return;
     }
@@ -1424,7 +1611,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       const defaultLevel = selectedLevel || this._ensureFloor("EG", this._draft) || this._draft.levels?.[0];
       const levelId = defaultLevel?.id;
       const layout = { x: 1, y: 1, w: 3, h: 2 };
-      const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, parent_id: "house", mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], layout, layout_mode: "docked", dock_order: this._dockedAreas(levelId, this._draft).length };
+      const area = { id: this._id("area"), name: "Neuer Bereich", level_id: levelId, parent_id: "house", mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout, layout_mode: "docked", dock_order: this._visualRootAreas(levelId, this._draft).length };
       this._draft.areas.push(area);
       this._layoutLevelId = levelId;
       this._selectedAreaId = area.id;
@@ -1484,7 +1671,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       if (!parent) return;
       const level = parent.id === "house" ? (this._ensureFloor("EG", this._draft) || this._draft.levels?.[0]) : this._levelById(parent.level_id, this._draft);
       const levelId = level?.id || this._draft.levels?.[0]?.id;
-      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], layout: { x: 1, y: 1, w: 2, h: 1 }, layout_mode: "docked", dock_order: this._dockedAreas(levelId, this._draft).length };
+      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", thermal_power_entity: "", thermal_energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], thermal_power_terms: [], thermal_energy_terms: [], layout: { x: 1, y: 1, w: 2, h: 1 }, layout_mode: "docked", dock_order: this._sameLevelChildren(parent.id, levelId, this._draft).length };
       this._draft.areas.push(area);
       this._selectedAreaId = area.id;
       this._layoutLevelId = levelId;
@@ -1498,6 +1685,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
       const child = this._areaById(select?.value, this._draft);
       if (parent && child && child.id !== parent.id && !this._isHierarchyDescendant(parent.id, child.id, this._draft)) {
         child.parent_id = parent.id;
+        if (parent.id !== "house") this._moveBranchToLevel(child, parent.level_id, this._draft);
+        child.layout_mode = "docked";
+        child.dock_order = this._sameLevelChildren(parent.id, child.level_id, this._draft).filter((item) => item.id !== child.id).length;
+        this._normalizeDockOrder(child.level_id, this._draft);
         this._saveNotice = "";
       }
       this._render();
@@ -1505,7 +1696,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     }
     if (action === "add-measure-term") {
       const area = this._areaById(button.dataset.areaId, this._draft);
-      const key = button.dataset.kind === "energy" ? "energy_terms" : "power_terms";
+      const key = this._termKey(button.dataset.kind);
       if (area) {
         if (!Array.isArray(area[key])) area[key] = [];
         area[key].push({ op: "+", source_type: "area", source_id: "" });
@@ -1516,7 +1707,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     }
     if (action === "remove-measure-term") {
       const area = this._areaById(button.dataset.areaId, this._draft);
-      const key = button.dataset.kind === "energy" ? "energy_terms" : "power_terms";
+      const key = this._termKey(button.dataset.kind);
       if (area && Array.isArray(area[key])) area[key].splice(Number(button.dataset.index), 1);
       this._saveNotice = "";
       this._render();
@@ -1564,6 +1755,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
         candidate.terms = (candidate.terms || []).filter((term) => term.area_id !== areaId);
         candidate.power_terms = (candidate.power_terms || []).filter((term) => !(term.source_type === "area" && term.source_id === areaId));
         candidate.energy_terms = (candidate.energy_terms || []).filter((term) => !(term.source_type === "area" && term.source_id === areaId));
+        candidate.thermal_power_terms = (candidate.thermal_power_terms || []).filter((term) => !(term.source_type === "area" && term.source_id === areaId));
+        candidate.thermal_energy_terms = (candidate.thermal_energy_terms || []).filter((term) => !(term.source_type === "area" && term.source_id === areaId));
       }
       this._draft.areas = this._draft.areas.filter((candidate) => candidate.id !== areaId);
       this._selectedAreaId = this._draft.areas.find((candidate) => candidate.level_id === this._layoutLevelId)?.id || this._draft.areas[0]?.id || null;
@@ -1619,14 +1812,14 @@ class EnergySystemDashboardPanel extends HTMLElement {
         return;
       }
       if (target.dataset.calcIndex !== undefined) {
-        const key = target.dataset.calcKind === "energy" ? "energy_terms" : "power_terms";
+        const key = this._termKey(target.dataset.calcKind);
         const term = area[key]?.[Number(target.dataset.calcIndex)];
         if (!term) return;
         if (target.dataset.calcField === "op") term.op = target.value === "-" ? "-" : "+";
         if (target.dataset.calcField === "source") Object.assign(term, this._parseMeasureSource(target.value));
         this._saveNotice = "";
         this._render();
-        if (target.dataset.calcKind === "energy" && target.dataset.calcField === "source") this._refreshDailyEnergy(this._draft);
+        if (target.dataset.calcKind?.includes("energy") && target.dataset.calcField === "source") this._refreshDailyEnergy(this._draft);
         return;
       }
       if (target.dataset.areaSourceIndex !== undefined) {
@@ -1649,15 +1842,28 @@ class EnergySystemDashboardPanel extends HTMLElement {
         }
         if (target.dataset.areaField === "parent_id" && nextValue && this._isHierarchyDescendant(nextValue, area.id, this._draft)) return;
         area[target.dataset.areaField] = nextValue;
+        if (target.dataset.areaField === "parent_id" && nextValue && nextValue !== "house") {
+          const parent = this._areaById(nextValue, this._draft);
+          if (parent) {
+            this._moveBranchToLevel(area, parent.level_id, this._draft);
+            area.layout_mode = "docked";
+            area.dock_order = this._sameLevelChildren(parent.id, parent.level_id, this._draft).filter((item) => item.id !== area.id).length;
+            this._layoutLevelId = parent.level_id;
+            this._normalizeDockOrder(parent.level_id, this._draft);
+          }
+        }
         if (target.dataset.areaField === "mode" && nextValue === "calculated") {
           if (!Array.isArray(area.power_terms)) area.power_terms = [];
           if (!Array.isArray(area.energy_terms)) area.energy_terms = [];
+          if (!Array.isArray(area.thermal_power_terms)) area.thermal_power_terms = [];
+          if (!Array.isArray(area.thermal_energy_terms)) area.thermal_energy_terms = [];
         }
         this._saveNotice = "";
         if (target.dataset.areaField === "level_id" && area.id !== "house") {
+          this._moveBranchToLevel(area, nextValue, this._draft);
           this._layoutLevelId = nextValue;
           area.layout_mode = "docked";
-          area.dock_order = this._dockedAreas(nextValue, this._draft, area.id).length;
+          if (this._isVisualRoot(area, this._draft)) area.dock_order = this._visualRootAreas(nextValue, this._draft).filter((item) => item.id !== area.id).length;
           this._normalizeDockOrder(nextValue, this._draft);
         }
         if (["mode", "calculation_type", "level_id", "name", "basis_area_id", "parent_id"].includes(target.dataset.areaField)) this._render();
@@ -1676,37 +1882,61 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _onDragOver(event) {
-    if (event.target.closest("[data-layout-grid]")) event.preventDefault();
+    if (event.target.closest("[data-layout-grid]") || event.target.closest("[data-child-drop-parent]")) event.preventDefault();
   }
 
   _onDrop(event) {
+    if (!this._draft) return;
+    const childContainer = event.target.closest("[data-child-drop-parent]");
     const grid = event.target.closest("[data-layout-grid]");
-    if (!grid || !this._draft) return;
+    if (!childContainer && !grid) return;
     event.preventDefault();
     const areaId = event.dataTransfer?.getData("text/plain") || this._dragAreaId;
     const area = this._areaById(areaId, this._draft);
     if (!area || area.id === "house") return;
     const oldLevelId = area.level_id;
-    const rect = grid.getBoundingClientRect();
-    const column = Math.max(1, Math.min(12, Math.floor(((event.clientX - rect.left) / rect.width) * 12) + 1));
-    const rows = Math.max(2, Number(getComputedStyle(grid).getPropertyValue("--rows")) || this._levelRows(this._levelById(grid.dataset.levelId, this._draft), this._draft));
-    const row = Math.max(1, Math.min(rows + 4, Math.floor(((event.clientY - rect.top) / Math.max(rect.height, 1)) * rows) + 1));
-    const levelId = grid.dataset.levelId;
 
-    if (this._shouldDock(levelId, column, row, this._draft, area.id)) {
-      this._dockAt(area, levelId, column, row, this._draft);
-    } else {
-      const size = this._clampLayout(area.layout);
-      area.level_id = levelId;
-      area.layout_mode = "free";
-      area.layout = this._findFreeLayout(area, {
-        ...size,
-        x: Math.max(1, column - Math.floor(size.w / 2)),
-        y: Math.max(1, row - Math.floor(size.h / 2)),
-      }, this._draft);
-      this._normalizeDockOrder(levelId, this._draft);
+    if (childContainer) {
+      const parent = this._areaById(childContainer.dataset.childDropParent, this._draft);
+      if (parent && parent.id !== area.id && !this._isHierarchyDescendant(parent.id, area.id, this._draft)) {
+        area.parent_id = parent.id;
+        this._moveBranchToLevel(area, parent.level_id, this._draft);
+        area.layout_mode = "docked";
+        const siblings = this._sameLevelChildren(parent.id, parent.level_id, this._draft).filter((item) => item.id !== area.id);
+        const groups = [...childContainer.querySelectorAll(":scope > [data-area-group]")].filter((item) => item.dataset.areaGroup !== area.id);
+        let insertion = siblings.length;
+        for (let index = 0; index < groups.length; index += 1) {
+          const rect = groups[index].getBoundingClientRect();
+          if (event.clientY < rect.top + rect.height / 2 || (event.clientY <= rect.bottom && event.clientX < rect.left + rect.width / 2)) {
+            insertion = index;
+            break;
+          }
+        }
+        siblings.splice(insertion, 0, area);
+        siblings.forEach((item, index) => { item.dock_order = index; });
+        this._normalizeDockOrder(parent.level_id, this._draft);
+      }
+    } else if (grid) {
+      const rect = grid.getBoundingClientRect();
+      const column = Math.max(1, Math.min(12, Math.floor(((event.clientX - rect.left) / rect.width) * 12) + 1));
+      const rows = Math.max(2, Number(getComputedStyle(grid).getPropertyValue("--rows")) || this._levelRows(this._levelById(grid.dataset.levelId, this._draft), this._draft));
+      const row = Math.max(1, Math.min(rows + 4, Math.floor(((event.clientY - rect.top) / Math.max(rect.height, 1)) * rows) + 1));
+      const levelId = grid.dataset.levelId;
+      if (this._shouldDock(levelId, column, row, this._draft, area.id)) {
+        this._dockAt(area, levelId, column, row, this._draft);
+      } else if (this._isVisualRoot(area, this._draft)) {
+        const size = this._clampLayout(area.layout);
+        area.level_id = levelId;
+        area.layout_mode = "free";
+        area.layout = this._findFreeLayout(area, {
+          ...size,
+          x: Math.max(1, column - Math.floor(size.w / 2)),
+          y: Math.max(1, row - Math.floor(size.h / 2)),
+        }, this._draft);
+        this._normalizeDockOrder(levelId, this._draft);
+      }
     }
-    if (oldLevelId && oldLevelId !== levelId) this._normalizeDockOrder(oldLevelId, this._draft);
+    if (oldLevelId && oldLevelId !== area.level_id) this._normalizeDockOrder(oldLevelId, this._draft);
     this._layoutLevelId = area.level_id;
     this._selectedAreaId = area.id;
     this._dragAreaId = null;
@@ -1816,8 +2046,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .node-meta { border-top:1px solid var(--line); color:var(--muted); font:600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.06em; }
         .node-meta span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .wire.vertical { width:1px; height:36px; background:var(--line); margin:0 auto; position:relative; }
-        .wire.active::after { content:""; position:absolute; left:-2px; top:-4px; width:5px; height:10px; background:var(--active); animation:flow-v 1.6s linear infinite; }
-        @keyframes flow-v { from { transform:translateY(0); } to { transform:translateY(40px); } }
+        .wire.active::after { content:""; position:absolute; left:-2px; top:-4px; width:5px; height:10px; background:var(--active); animation:flow-v 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
+        .wire.flow-thermal { background:rgba(93,159,198,.58); }
+        .wire.flow-thermal.active::after { background:var(--thermal); }
+        @keyframes flow-v { from { transform:translateY(0); } to { transform:translateY(calc(100% + 34px)); } }
         .bus { max-width:1500px; margin:0 auto; height:46px; border-top:2px solid var(--line-strong); border-bottom:2px solid var(--line-strong); display:flex; align-items:center; justify-content:center; gap:18px; background:rgba(255,255,255,.018); font:700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.12em; }
         .bus strong { color:var(--active); font-size:14px; }
         .thermal-grid { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; align-items:stretch; }
@@ -1890,9 +2122,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .building-stack { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:0; }
         .editor-floor-stack { margin-top:12px; display:flex; flex-direction:column; gap:0; border-top:1px solid var(--line-strong); }
         .editor-floor-group { display:grid; grid-template-columns:58px minmax(0,1fr); min-width:0; border:1px solid var(--line-strong); border-top:0; background:var(--panel); }
-        .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:10px 4px; }
+        .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 4px; position:relative; overflow:hidden; }
         .floor-indicator strong { writing-mode:vertical-rl; transform:rotate(180deg); color:var(--text); font:800 13px/1 ui-monospace, monospace; letter-spacing:.12em; white-space:nowrap; }
         .floor-indicator span { min-width:26px; min-height:26px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace, monospace; }
+        .floor-indicator .floor-load { min-width:0; min-height:0; border:0; color:var(--active); font-size:9px; white-space:nowrap; }
+        .floor-indicator small { color:var(--muted); font:700 7px/1.15 ui-monospace,monospace; text-align:center; }
+        .flow-thermal .floor-indicator .floor-load { color:var(--thermal); }
         .floor-layout-body { min-width:0; }
         .floor-layout-meta { min-height:38px; display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:0 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
         .floor-layout-meta span, .floor-layout-meta em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
@@ -1909,7 +2144,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .level-head strong { font-size:12px; letter-spacing:.06em; }
         .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); gap:0; padding:0; min-height:calc(var(--rows) * 42px); background-image:linear-gradient(to right,rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; overflow:hidden; }
         .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),48px); min-height:calc(var(--rows) * 48px); background-size:calc(100% / 12) 100%,100% 48px; }
-        .area-tile { appearance:none; border:1px solid var(--line-strong); background:#15191d; color:var(--text); min-width:0; padding:10px 12px; display:flex; flex-direction:column; text-align:left; overflow:hidden; position:relative; z-index:1; margin:-1px 0 0 -1px; }
+        .area-group { min-width:0; min-height:0; display:flex; flex-direction:column; align-self:stretch; position:relative; z-index:1; overflow:hidden; }
+        .root-area-group { margin:-1px 0 0 -1px; }
+        .nested-area-group { width:100%; }
+        .area-child-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:0; padding:6px; border:2px solid var(--line-strong); border-top:0; background:#0d1013; }
+        .nested-area-group > .area-child-grid { border-width:1px; padding:4px; }
+        .area-tile { appearance:none; border:1px solid var(--line-strong); background:#15191d; color:var(--text); min-width:0; padding:10px 12px; display:flex; flex:1 1 auto; flex-direction:column; text-align:left; overflow:hidden; position:relative; z-index:1; margin:0; }
         .house-tile { width:100%; min-height:96px; margin:0; border-color:var(--line-strong); display:block; }
         button.house-tile { cursor:pointer; }
         .house-values { display:grid; grid-template-columns:1fr 1fr 2fr; gap:0; margin-top:10px; border-top:1px solid var(--line); }
@@ -1930,14 +2170,17 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .area-tile-energy { display:flex; justify-content:space-between; gap:8px; margin-top:8px; padding-top:7px; border-top:1px dotted var(--line); font:650 9px/1 ui-monospace, monospace; }
         .area-tile-energy span { color:var(--muted); }
         .area-tile-formula { color:var(--muted); margin-top:7px; font:600 8px/1.25 ui-monospace, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .area-tile.hierarchy-parent { border-width:2px; background:#181e23; box-shadow:inset 3px 0 0 rgba(105,190,255,.32); }
+        .area-tile.hierarchy-parent { border-width:2px; background:#181e23; box-shadow:inset 3px 0 0 rgba(105,190,255,.32); min-height:122px; }
         .area-tile.hierarchy-parent .area-tile-head strong { font-size:13px; letter-spacing:.055em; }
         .area-tile.hierarchy-parent .area-tile-power { font-size:26px; }
         .area-hierarchy-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:7px; padding:5px 7px; border:1px solid var(--line); background:rgba(255,255,255,.018); }
         .area-hierarchy-meta span { color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
         .area-hierarchy-meta strong { color:var(--active); font:750 8px/1 ui-monospace,monospace; letter-spacing:.06em; }
-        .area-tile.hierarchy-child { margin:5px; background:#0f1316; border-color:var(--line); box-shadow:inset 2px 0 0 rgba(105,190,255,.22); z-index:2; }
+        .area-tile.hierarchy-child { margin:0; background:#0f1316; border-color:var(--line); box-shadow:inset 2px 0 0 rgba(105,190,255,.22); z-index:2; min-height:72px; padding:7px 9px; }
         .area-tile.hierarchy-child.calculated { box-shadow:inset 2px 0 0 rgba(88,166,255,.42); }
+        .area-tile.thermal-area { box-shadow:inset 3px 0 0 rgba(93,159,198,.34); }
+        .area-tile.thermal-area .area-tile-head span, .area-tile.thermal-area .area-tile-power { color:var(--thermal); }
+        .thermal-calculation { box-shadow:inset 3px 0 0 rgba(93,159,198,.26); }
         .area-tile.hierarchy-child .area-tile-head strong { font-size:10px; }
         .area-tile.hierarchy-child .area-tile-power { font-size:17px; padding-top:5px; }
         .area-tile.hierarchy-child .area-tile-energy { margin-top:5px; padding-top:5px; font-size:8px; }
@@ -2013,6 +2256,17 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .building-zone .overview-floor-group { border-left:0; border-right:0; border-bottom:0; }
         .overview-building-stack .house-tile { border-bottom:0; }
         .overview-floor-group { border-color:var(--line); }
+        .distribution-flow-stack { position:relative; }
+        .distribution-flow-stack::before { content:""; position:absolute; left:8px; top:0; bottom:0; width:1px; background:var(--line-strong); z-index:6; pointer-events:none; }
+        .distribution-flow-stack::after { content:""; position:absolute; left:6px; top:0; width:5px; height:10px; background:var(--active); z-index:7; pointer-events:none; animation:flow-stack 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
+        .distribution-flow-stack.flow-thermal::before { background:rgba(93,159,198,.58); }
+        .distribution-flow-stack.flow-thermal::after { background:var(--thermal); }
+        .flow-floor-group .floor-indicator::after { content:""; position:absolute; left:8px; right:0; top:18px; height:1px; background:var(--line-strong); pointer-events:none; }
+        .flow-floor-group .floor-indicator::before { content:""; position:absolute; left:6px; top:16px; width:5px; height:5px; background:var(--active); z-index:8; pointer-events:none; animation:flow-branch 1.8s linear infinite; animation-delay:var(--flow-phase,0s); }
+        .flow-floor-group.flow-thermal .floor-indicator::after { background:rgba(93,159,198,.58); }
+        .flow-floor-group.flow-thermal .floor-indicator::before { background:var(--thermal); }
+        @keyframes flow-stack { from { top:0; } to { top:calc(100% - 10px); } }
+        @keyframes flow-branch { from { transform:translateX(0); } to { transform:translateX(50px); } }
         .magnetic-grid { transition:min-height .18s ease; }
         .area-tile.layout-docked { border-style:solid; }
         .area-tile.layout-free { outline:1px dotted rgba(255,255,255,.18); outline-offset:-4px; }

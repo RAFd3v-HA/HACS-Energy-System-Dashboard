@@ -33,7 +33,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 8,
+    "version": 9,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -63,12 +63,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "mode": "measured",
             "power_entity": "",
             "energy_entity": "",
+            "thermal_power_entity": "",
+            "thermal_energy_entity": "",
             "calculation_type": "difference",
             "basis_area_id": "",
             "source_area_ids": [],
             "terms": [],
             "power_terms": [],
             "energy_terms": [],
+            "thermal_power_terms": [],
+            "thermal_energy_terms": [],
             "layout": {"x": 1, "y": 1, "w": 12, "h": 2},
             "layout_mode": "docked",
             "dock_order": 0,
@@ -114,7 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.2",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.3.3",
                 }
             },
             require_admin=False,
@@ -235,7 +239,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 8
+    normalized["version"] = 9
 
     for key in ("generation", "storage", "heating", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -302,6 +306,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             "supply_entity",
             "return_entity",
             "temperature_entity",
+            "thermal_power_entity",
+            "thermal_energy_entity",
         ):
             module[key] = str(module.get(key) or "")
         heating.append(module)
@@ -387,7 +393,9 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         normalized_sources = [str(item) for item in source_area_ids if item]
         power_terms = _normalize_measure_terms(area.get("power_terms"))
         energy_terms = _normalize_measure_terms(area.get("energy_terms"))
-        if mode == "calculated" and not power_terms and not energy_terms:
+        thermal_power_terms = _normalize_measure_terms(area.get("thermal_power_terms"))
+        thermal_energy_terms = _normalize_measure_terms(area.get("thermal_energy_terms"))
+        if mode == "calculated" and not power_terms and not energy_terms and not thermal_power_terms and not thermal_energy_terms:
             migrated_terms = _legacy_measure_terms(
                 calculation_type, basis_area_id, normalized_sources, legacy_terms
             )
@@ -407,12 +415,16 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "mode": mode,
                 "power_entity": str(area.get("power_entity") or ""),
                 "energy_entity": str(area.get("energy_entity") or ""),
+                "thermal_power_entity": str(area.get("thermal_power_entity") or ""),
+                "thermal_energy_entity": str(area.get("thermal_energy_entity") or ""),
                 "calculation_type": calculation_type,
                 "basis_area_id": basis_area_id,
                 "source_area_ids": normalized_sources,
                 "terms": legacy_terms,
                 "power_terms": power_terms,
                 "energy_terms": energy_terms,
+                "thermal_power_terms": thermal_power_terms,
+                "thermal_energy_terms": thermal_energy_terms,
                 "layout": {"x": x, "y": y, "w": width, "h": height},
                 "layout_mode": "docked" if is_house else layout_mode,
                 "dock_order": _safe_int(area.get("dock_order"), y * 100 + x, 0, 10000),
@@ -449,7 +461,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             for term in area["terms"]
             if term["area_id"] in valid_ids and term["area_id"] != area["id"]
         ]
-        for key in ("power_terms", "energy_terms"):
+        for key in ("power_terms", "energy_terms", "thermal_power_terms", "thermal_energy_terms"):
             area[key] = [
                 term
                 for term in area[key]
@@ -476,16 +488,27 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         if area["id"] != "house" and has_parent_cycle(area["id"]):
             area["parent_id"] = "house" if "house" in valid_ids else ""
 
-    # Keep docked areas in a stable per-floor order. Existing 0.2.x layouts
-    # migrate to the visual top/left order they previously used.
+    # Keep docked areas in a stable order without mixing root areas and
+    # nested children. Root areas are positioned on the floor grid; children
+    # are ordered only inside their direct parent group.
     for level in levels:
-        docked = [
+        level_id = level["id"]
+
+        def is_visual_root(item: dict[str, Any]) -> bool:
+            parent_id = item.get("parent_id", "")
+            if not parent_id or parent_id == "house":
+                return True
+            parent = hierarchy_by_id.get(parent_id)
+            return parent is None or parent.get("level_id") != level_id
+
+        roots = [
             area for area in areas
             if area["id"] != "house"
-            and area["level_id"] == level["id"]
+            and area["level_id"] == level_id
             and area["layout_mode"] == "docked"
+            and is_visual_root(area)
         ]
-        docked.sort(
+        roots.sort(
             key=lambda item: (
                 item.get("dock_order", 10000),
                 item["layout"]["y"],
@@ -493,8 +516,26 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 item["name"],
             )
         )
-        for dock_order, area in enumerate(docked):
+        for dock_order, area in enumerate(roots):
             area["dock_order"] = dock_order
+
+        for parent in [item for item in areas if item["id"] != "house" and item["level_id"] == level_id]:
+            children = [
+                area for area in areas
+                if area["parent_id"] == parent["id"]
+                and area["level_id"] == level_id
+                and area["layout_mode"] == "docked"
+            ]
+            children.sort(
+                key=lambda item: (
+                    item.get("dock_order", 10000),
+                    item["layout"]["y"],
+                    item["layout"]["x"],
+                    item["name"],
+                )
+            )
+            for dock_order, area in enumerate(children):
+                area["dock_order"] = dock_order
 
     by_id = {area["id"]: area for area in areas}
 
@@ -503,7 +544,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             return set()
         return {
             term["source_id"]
-            for key in ("power_terms", "energy_terms")
+            for key in ("power_terms", "energy_terms", "thermal_power_terms", "thermal_energy_terms")
             for term in area.get(key, [])
             if term.get("source_type") == "area" and term.get("source_id")
         }
@@ -535,6 +576,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             area["terms"] = []
             area["power_terms"] = []
             area["energy_terms"] = []
+            area["thermal_power_terms"] = []
+            area["thermal_energy_terms"] = []
 
     normalized["areas"] = areas or [dict(DEFAULT_CONFIG["areas"][0])]
     return normalized
