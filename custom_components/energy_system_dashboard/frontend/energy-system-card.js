@@ -1,4 +1,4 @@
-const PANEL_MODULE_URL = "/energy_system_dashboard/energy-system-dashboard.js?v=0.3.5";
+const PANEL_MODULE_URL = "/energy_system_dashboard/energy-system-dashboard.js?v=0.3.6";
 const VALID_VIEWS = ["system", "electrical", "thermal", "building"];
 const VALID_DISPLAYS = ["full", "compact"];
 

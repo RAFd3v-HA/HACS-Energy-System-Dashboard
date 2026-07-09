@@ -1,18 +1,26 @@
-# Energy System Dashboard 0.3.5
+# Energy System Dashboard 0.3.6
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
+## V0.3.6 – Lastkanal, Stockwerksreferenz und vertikale Zentrierung
+
+- Die Lastbox am Stockwerksabgang enthält weiterhin nur die aktuelle Leistung, liegt jetzt aber oberhalb der animierten Leitung. Die Flow-Animation läuft dadurch nicht mehr durch Wattwerte oder Text.
+- Die seitliche Stockwerksreferenz zeigt Stockwerksname, aktuelle Stockwerkslast und `HEUTE`-Energie gemeinsam an.
+- Alle dargestellten Stockwerke erhalten eine gemeinsame Mindesthöhe. Diese wird aus der längsten Stockwerksbezeichnung im aktuellen Gebäudestapel abgeleitet.
+- Root-Bereiche werden in der verfügbaren Stockwerksfläche vertikal zentriert. Parent und Children werden dabei als zusammenhängender Hierarchieverband gemeinsam zentriert.
+- Kleine Einzelbereiche wie `Garten` kleben dadurch nicht mehr direkt unter der oberen Stockwerkskante.
+- Die gleiche Geometrie und Zentrierungslogik gilt für elektrische und thermische Stockwerkslasten.
+- Frontend- und Lovelace-Ressourcen verwenden Version `0.3.6` zur Cache-Trennung.
+
 ## V0.3.5 – Flow-Geometrie und Child-Connector-Cleanup
 
-- Elektrische und thermische Verteilleitungen verwenden jetzt dieselbe durchgehende Leitungsfarbe und dieselbe Animationsdefinition.
-- Der Übergang von der mittigen Verteilung in die linke Stockwerksschiene ist geometrisch geschlossen; die zusätzliche linke Fallleitung verhindert die bisherige Unterbrechung.
+- Elektrische und thermische Verteilleitungen verwenden dieselbe durchgehende Leitungsfarbe und dieselbe Animationsdefinition.
+- Der Übergang von der mittigen Verteilung in die linke Stockwerksschiene ist geometrisch geschlossen.
 - Die mittige Fallleitung und der horizontale Verteiler treffen sich pixelgenau auf derselben 2-px-Achse.
-- Die Stockwerksschiene wird je Stockwerkskanal gerendert und endet beim letzten Stockwerk auf Höhe des letzten Abgangs.
+- Die Stockwerksschiene endet beim letzten Stockwerk auf Höhe des letzten Abgangs.
 - Parent/Child-Container verwenden ein festes Spacing-System ohne doppelte 2-px-Rahmen.
 - Children werden vertikal unter ihrem Parent angeordnet. Die Hierarchielinie wird nur zwischen tatsächlich vorhandenen Children fortgeführt und endet auf Höhe des letzten Childs.
-- Parent-Metadaten liegen kompakt im Kopf der Hauptkachel, damit Parent und gleichartige Root-Bereiche dieselbe Hauptkachelhöhe behalten.
-- Die reservierte Rasterhöhe eines Parent-Verbunds wird rekursiv aus allen Children berechnet, damit Child-Inhalte und Formeln nicht in den nächsten Stockwerksrahmen ragen.
-- Frontend- und Lovelace-Ressourcen verwenden Version `0.3.5` zur Cache-Trennung.
+- Die reservierte Rasterhöhe eines Parent-Verbunds wird rekursiv aus allen Children berechnet.
 
 ## V0.3.4 – Layout- und Flow-Korrektur
 
@@ -136,7 +144,7 @@ Die Karte verwendet dieselbe zentrale Topologie. Es werden keine Entity-IDs in d
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.3.5
+/energy_system_dashboard/energy-system-card.js?v=0.3.6
 ```
 
 Home Assistant:
@@ -146,7 +154,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.3.5
+URL: /energy_system_dashboard/energy-system-card.js?v=0.3.6
 Typ: JavaScript-Modul
 ```
 
@@ -155,7 +163,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.5
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.6
       type: module
 ```
 

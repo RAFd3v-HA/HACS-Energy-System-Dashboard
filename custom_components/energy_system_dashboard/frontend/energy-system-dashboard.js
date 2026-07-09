@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.3.5";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.3.6";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -1259,7 +1259,12 @@ class EnergySystemDashboardPanel extends HTMLElement {
       </section>`;
   }
 
-  _renderOverviewFloorGroup(level, config = this._config, kind = "electric", isFirst = false, isLast = false) {
+  _floorStackMinHeight(levels = []) {
+    const longestName = Math.max(2, ...levels.map((level) => String(level?.name || "").trim().length));
+    return Math.max(190, Math.min(360, 96 + longestName * 8));
+  }
+
+  _renderOverviewFloorGroup(level, config = this._config, kind = "electric", isFirst = false, isLast = false, floorMinHeight = 190) {
     const roots = this._visualRootAreas(level.id, config)
       .filter((area) => this._branchHasConfig(area, kind, config));
     if (!roots.length) return "";
@@ -1271,13 +1276,13 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const today = kind === "thermal" ? this._levelThermalTodayEnergy(level, config) : this._levelTodayEnergy(level, config);
     const edgeClass = `${isFirst ? " is-first-floor" : ""}${isLast ? " is-last-floor" : ""}`;
     return `
-      <section class="overview-floor-group flow-floor-group flow-${kind}${edgeClass}" style="--flow-phase:${this._flowPhase(1.8)}">
+      <section class="overview-floor-group flow-floor-group flow-${kind}${edgeClass}" style="--flow-phase:${this._flowPhase(1.8)};--floor-min-height:${floorMinHeight}px">
         <div class="floor-flow-channel">
           <i class="flow-segment vertical floor-channel-rail"></i>
           <i class="flow-segment horizontal branch-segment"></i>
           <span class="floor-branch-load">${this._formatPowerW(load)}</span>
         </div>
-        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><small class="daily-value">HEUTE ${this._formatEnergyKWh(today)}</small></aside>
+        <aside class="floor-indicator"><strong>${this._esc(level.name)}</strong><span class="floor-load">${this._formatPowerW(load)}</span><small class="daily-value">HEUTE ${this._formatEnergyKWh(today)}</small></aside>
         <div class="floor-layout-body">
           <div class="floor-layout-meta"><span>${kind === "thermal" ? "THERMISCHE EBENE" : "ELEKTRISCHE EBENE"}</span><strong>${this._esc(level.name)}</strong><em>${roots.length} HAUPTBEREICH${roots.length === 1 ? "" : "E"}</em></div>
           <div class="level-grid readonly" style="--rows:${rows}">
@@ -1305,7 +1310,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
         levels = [requested];
       }
     }
-    const floors = levels.map((level, index) => this._renderOverviewFloorGroup(level, config, kind, index === 0, index === levels.length - 1)).join("");
+    const floorMinHeight = this._floorStackMinHeight(levels);
+    const floors = levels.map((level, index) => this._renderOverviewFloorGroup(level, config, kind, index === 0, index === levels.length - 1, floorMinHeight)).join("");
     const flowRoute = floors ? `<div class="distribution-manifold flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}"><i class="flow-segment vertical manifold-drop"></i><i class="flow-segment horizontal manifold-run flow-left"></i><i class="flow-segment vertical manifold-rail-drop"></i></div><div class="floor-stack flow-${kind}" style="--flow-phase:${this._flowPhase(1.8)}">${floors}</div>` : "";
     return `<div class="building-stack overview-building-stack distribution-flow-stack flow-${kind}">${houseHtml}${selector}${flowRoute || this._empty(kind === "thermal" ? "Noch keine thermischen Bereichslasten vorhanden." : "Noch keine elektrischen Bereiche vorhanden.")}</div>`;
   }
@@ -2166,22 +2172,22 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .building-stack { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; gap:0; }
         .editor-floor-stack { margin-top:12px; display:flex; flex-direction:column; gap:0; border-top:1px solid var(--line-strong); }
         .editor-floor-group { display:grid; grid-template-columns:58px minmax(0,1fr); min-width:0; border:1px solid var(--line-strong); border-top:0; background:var(--panel); }
-        .overview-floor-group { display:grid; grid-template-columns:150px 62px minmax(0,1fr); min-width:0; border:1px solid var(--line); background:var(--panel); position:relative; }
+        .overview-floor-group { display:grid; grid-template-columns:150px 62px minmax(0,1fr); min-width:0; min-height:var(--floor-min-height,190px); border:1px solid var(--line); background:var(--panel); position:relative; }
         .overview-floor-group + .overview-floor-group { border-top:0; }
         .floor-flow-channel { min-width:0; position:relative; background:#0b0e11; border-right:1px solid var(--line); overflow:visible; }
-        .floor-flow-channel .floor-channel-rail { left:18px; top:-1px; bottom:-1px; z-index:4; }
+        .floor-flow-channel .floor-channel-rail { left:18px; top:-1px; bottom:-1px; z-index:3; }
         .flow-floor-group.is-last-floor .floor-channel-rail { bottom:50%; }
-        .floor-flow-channel .branch-segment { position:absolute; left:18px; right:-1px; top:50%; transform:translateY(-50%); z-index:4; }
-        .floor-branch-load { position:absolute; right:10px; top:50%; transform:translateY(-50%); min-width:72px; padding:6px 8px; border:1px solid var(--line-strong); background:#0d1013; color:var(--active); text-align:right; font:800 10px/1 ui-monospace,monospace; letter-spacing:.02em; z-index:3; }
+        .floor-flow-channel .branch-segment { position:absolute; left:18px; right:-1px; top:50%; transform:translateY(-50%); z-index:3; }
+        .floor-branch-load { position:absolute; right:10px; top:50%; transform:translateY(calc(-100% - 8px)); min-width:72px; padding:6px 8px; border:1px solid var(--line-strong); background:#0d1013; color:var(--active); text-align:right; font:800 10px/1 ui-monospace,monospace; letter-spacing:.02em; z-index:6; box-shadow:0 0 0 3px #0b0e11; }
         .flow-thermal .floor-branch-load { color:var(--thermal); }
-        .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; padding:10px 4px; position:relative; overflow:hidden; }
+        .floor-indicator { min-width:0; border-right:1px solid var(--line-strong); background:#0d1013; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; padding:14px 4px; position:relative; overflow:hidden; }
         .floor-indicator strong { writing-mode:vertical-rl; transform:rotate(180deg); color:var(--text); font:800 13px/1 ui-monospace, monospace; letter-spacing:.12em; white-space:nowrap; }
         .floor-indicator span { min-width:26px; min-height:26px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace, monospace; }
-        .floor-indicator .floor-load { min-width:0; min-height:0; border:0; color:var(--active); font-size:9px; white-space:nowrap; }
+        .floor-indicator .floor-load { min-width:0; min-height:0; border:0; color:var(--active); font:800 9px/1 ui-monospace,monospace; white-space:nowrap; }
         .floor-indicator small { color:var(--muted); font:700 7px/1.15 ui-monospace,monospace; text-align:center; }
         .flow-thermal .floor-indicator .floor-load { color:var(--thermal); }
-        .floor-layout-body { min-width:0; }
-        .floor-layout-meta { min-height:38px; display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:0 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
+        .floor-layout-body { min-width:0; min-height:0; display:flex; flex-direction:column; }
+        .floor-layout-meta { min-height:38px; flex:0 0 38px; display:grid; grid-template-columns:90px 1fr auto; align-items:center; gap:12px; padding:0 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.015); }
         .floor-layout-meta span, .floor-layout-meta em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
         .floor-layout-meta strong { font-size:11px; letter-spacing:.06em; }
         .view-level-toolbar { max-width:1500px; margin:12px auto 0; display:flex; align-items:center; gap:14px; min-height:42px; padding:6px 10px; border:1px solid var(--line); border-bottom:0; background:rgba(255,255,255,.015); }
@@ -2194,8 +2200,9 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .level-head { min-height:42px; display:grid; grid-template-columns:90px 1fr auto; gap:12px; align-items:center; padding:0 14px; border-bottom:1px solid var(--line); }
         .level-head span, .level-head em { color:var(--muted); font:700 9px/1 ui-monospace, monospace; letter-spacing:.1em; font-style:normal; }
         .level-head strong { font-size:12px; letter-spacing:.06em; }
-        .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); gap:0; padding:0; min-height:calc(var(--rows) * 42px); background-image:linear-gradient(to right,rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; overflow:hidden; }
+        .level-grid { position:relative; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); grid-template-rows:repeat(var(--rows),42px); align-content:center; gap:0; padding:0; min-height:calc(var(--rows) * 42px); background-image:linear-gradient(to right,rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.05) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; overflow:hidden; }
         .level-grid.layout-grid { grid-template-rows:repeat(var(--rows),48px); min-height:calc(var(--rows) * 48px); background-size:calc(100% / 12) 100%,100% 48px; }
+        .overview-floor-group .level-grid { flex:1 1 auto; }
         .area-group { min-width:0; min-height:0; display:flex; flex-direction:column; align-self:stretch; position:relative; z-index:1; overflow:visible; box-sizing:border-box; }
         .root-area-group { margin:0; }
         .nested-area-group { width:100%; min-height:auto; overflow:visible; }
