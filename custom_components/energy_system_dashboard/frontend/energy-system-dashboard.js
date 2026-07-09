@@ -480,6 +480,26 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return (config?.areas || []).filter((area) => area.id !== "house" && area.parent_id === parentId);
   }
 
+  _hierarchyDepth(area, config = this._draft || this._config) {
+    if (!area || area.id === "house") return 0;
+    let depth = 0;
+    let current = area;
+    const visited = new Set();
+    while (current?.parent_id && current.parent_id !== "house" && !visited.has(current.id)) {
+      visited.add(current.id);
+      depth += 1;
+      current = this._areaById(current.parent_id, config);
+    }
+    return depth;
+  }
+
+  _directChildOptions(parentId, config = this._draft || this._config) {
+    const children = this._childrenOf(parentId, config);
+    return `<option value="">— Unterbereich auswählen —</option>` + children
+      .map((child) => `<option value="${this._esc(child.id)}">${this._esc(child.name)} · ${child.mode === "calculated" ? "C" : "M"}</option>`)
+      .join("");
+  }
+
   _isHierarchyDescendant(descendantId, ancestorId, config = this._draft || this._config) {
     if (!descendantId || !ancestorId || descendantId === ancestorId) return descendantId === ancestorId;
     const visited = new Set();
@@ -1125,8 +1145,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const selected = interactive && area.id === this._selectedAreaId;
     const tag = interactive ? "button" : "article";
     const attrs = interactive ? `type="button" draggable="true" data-drag-area="${this._esc(area.id)}" data-action="select-area" data-area-id="${this._esc(area.id)}"` : "";
-    return `<${tag} class="area-tile ${area.mode === "calculated" ? "calculated" : "measured"} layout-${this._layoutMode(area)} ${selected ? "selected" : ""}" ${attrs} style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}">
+    const children = this._childrenOf(area.id, config);
+    const parent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, config) : null;
+    const depth = this._hierarchyDepth(area, config);
+    const hierarchyClass = children.length ? " hierarchy-parent" : parent ? ` hierarchy-child hierarchy-depth-${Math.min(depth, 3)}` : " hierarchy-root";
+    const relation = children.length
+      ? `<div class="area-hierarchy-meta"><span>PARENT</span><strong>${children.length} UNTERBEREICH${children.length === 1 ? "" : "E"}</strong></div>`
+      : parent ? `<div class="area-parent-ref">↳ ${this._esc(parent.name)}</div>` : "";
+    return `<${tag} class="area-tile ${area.mode === "calculated" ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs} style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)}">
       <div class="area-tile-head"><span>${area.mode === "calculated" ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
+      ${relation}
       <div class="area-tile-power">${this._formatPowerW(power)}</div>
       <div class="area-tile-energy daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>
       <div class="area-tile-formula">${this._esc(this._areaFormula(area, config))}</div>
@@ -1281,8 +1309,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return `<div class="inspector-section hierarchy-section">
       <div class="inspector-label">HIERARCHIE / PARENT & CHILD</div>
       ${parentField}
-      <div class="child-list">${children.map((child) => `<button type="button" data-action="select-area" data-area-id="${this._esc(child.id)}"><span>${this._esc(child.name)}</span><em>${this._isConfiguredArea(child, d) ? "KONFIGURIERT" : "OFFEN"}</em></button>`).join("") || `<div class="child-empty">KEINE UNTERBEREICHE</div>`}</div>
+      <div class="hierarchy-subhead"><span>UNTERBEREICHE</span><strong>${children.length}</strong></div>
+      <div class="child-list">${children.map((child) => `<button type="button" data-action="select-area" data-area-id="${this._esc(child.id)}"><b>${child.mode === "calculated" ? "C" : "M"}</b><span><strong>${this._esc(child.name)}</strong><small>↳ ${this._esc(area.name || "Parent")}</small></span><em>${this._isConfiguredArea(child, d) ? "KONFIGURIERT" : "OFFEN"}</em></button>`).join("") || `<div class="child-empty">KEINE UNTERBEREICHE</div>`}</div>
+      ${children.length ? `<div class="child-open"><span>UNTERBEREICH ÖFFNEN</span><div><select data-child-open-select="${this._esc(area.id)}">${this._directChildOptions(area.id, d)}</select><button type="button" data-action="open-child" data-area-id="${this._esc(area.id)}">ÖFFNEN</button></div></div>` : ""}
       <button class="small-action" type="button" data-action="add-child" data-area-id="${this._esc(area.id)}">+ UNTERBEREICH</button>
+      <div class="child-assign-label">BESTEHENDEN BEREICH ALS UNTERBEREICH ZUORDNEN</div>
       <div class="child-assign"><select data-child-parent-select="${this._esc(area.id)}">${this._areaOptionsForChildAssignment(area.id, d)}</select><button type="button" data-action="assign-child" data-area-id="${this._esc(area.id)}">ZUORDNEN</button></div>
     </div>`;
   }
@@ -1441,12 +1472,19 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._render();
       return;
     }
+    if (action === "open-child") {
+      const select = this.shadowRoot.querySelector(`[data-child-open-select="${CSS.escape(button.dataset.areaId)}"]`);
+      const child = this._areaById(select?.value, this._draft);
+      if (child) this._selectedAreaId = child.id;
+      this._render();
+      return;
+    }
     if (action === "add-child") {
       const parent = this._areaById(button.dataset.areaId, this._draft);
       if (!parent) return;
       const level = parent.id === "house" ? (this._ensureFloor("EG", this._draft) || this._draft.levels?.[0]) : this._levelById(parent.level_id, this._draft);
       const levelId = level?.id || this._draft.levels?.[0]?.id;
-      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], layout: { x: 1, y: 1, w: 3, h: 2 }, layout_mode: "docked", dock_order: this._dockedAreas(levelId, this._draft).length };
+      const area = { id: this._id("area"), name: "Neuer Unterbereich", level_id: levelId, parent_id: parent.id, mode: "measured", power_entity: "", energy_entity: "", calculation_type: "difference", basis_area_id: "", source_area_ids: [], terms: [], power_terms: [], energy_terms: [], layout: { x: 1, y: 1, w: 2, h: 1 }, layout_mode: "docked", dock_order: this._dockedAreas(levelId, this._draft).length };
       this._draft.areas.push(area);
       this._selectedAreaId = area.id;
       this._layoutLevelId = levelId;
@@ -1892,6 +1930,21 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .area-tile-energy { display:flex; justify-content:space-between; gap:8px; margin-top:8px; padding-top:7px; border-top:1px dotted var(--line); font:650 9px/1 ui-monospace, monospace; }
         .area-tile-energy span { color:var(--muted); }
         .area-tile-formula { color:var(--muted); margin-top:7px; font:600 8px/1.25 ui-monospace, monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .area-tile.hierarchy-parent { border-width:2px; background:#181e23; box-shadow:inset 3px 0 0 rgba(105,190,255,.32); }
+        .area-tile.hierarchy-parent .area-tile-head strong { font-size:13px; letter-spacing:.055em; }
+        .area-tile.hierarchy-parent .area-tile-power { font-size:26px; }
+        .area-hierarchy-meta { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:7px; padding:5px 7px; border:1px solid var(--line); background:rgba(255,255,255,.018); }
+        .area-hierarchy-meta span { color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .area-hierarchy-meta strong { color:var(--active); font:750 8px/1 ui-monospace,monospace; letter-spacing:.06em; }
+        .area-tile.hierarchy-child { margin:5px; background:#0f1316; border-color:var(--line); box-shadow:inset 2px 0 0 rgba(105,190,255,.22); z-index:2; }
+        .area-tile.hierarchy-child.calculated { box-shadow:inset 2px 0 0 rgba(88,166,255,.42); }
+        .area-tile.hierarchy-child .area-tile-head strong { font-size:10px; }
+        .area-tile.hierarchy-child .area-tile-power { font-size:17px; padding-top:5px; }
+        .area-tile.hierarchy-child .area-tile-energy { margin-top:5px; padding-top:5px; font-size:8px; }
+        .area-tile.hierarchy-child .area-tile-formula { margin-top:5px; font-size:7px; }
+        .area-parent-ref { color:var(--muted); margin-top:5px; font:650 8px/1 ui-monospace,monospace; letter-spacing:.04em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .area-tile.hierarchy-depth-2 { margin:7px; box-shadow:inset 2px 0 0 rgba(105,190,255,.14); }
+        .area-tile.hierarchy-depth-3 { margin:9px; box-shadow:inset 2px 0 0 rgba(105,190,255,.10); }
         .layout-empty { grid-column:1 / -1; grid-row:1 / span 2; display:flex; align-items:center; justify-content:center; color:var(--muted); font:650 10px/1 ui-monospace, monospace; letter-spacing:.08em; }
         .layout-empty.standalone { min-height:120px; border:1px dashed var(--line); }
         .layout-config-card { overflow:hidden; }
@@ -1925,14 +1978,22 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .measure-preview strong { font:700 16px/1 ui-monospace,monospace; }
         .measure-preview small { grid-column:1 / -1; color:var(--muted); font:600 8px/1.4 ui-monospace,monospace; overflow-wrap:anywhere; }
         .hierarchy-section .field { padding:0 0 10px; border-bottom:0; }
+        .hierarchy-subhead { min-height:28px; display:flex; align-items:center; justify-content:space-between; gap:8px; margin:2px 0 6px; color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .hierarchy-subhead strong { min-width:24px; min-height:24px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font-size:9px; }
         .child-list { display:flex; flex-direction:column; gap:5px; margin-bottom:7px; }
-        .child-list button { min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); display:flex; justify-content:space-between; align-items:center; gap:10px; padding:0 9px; text-align:left; }
-        .child-list button span { font:700 10px/1 ui-monospace,monospace; }
+        .child-list button { min-height:44px; border:1px solid var(--line); border-left:3px solid rgba(105,190,255,.28); background:#101316; color:var(--text); display:grid; grid-template-columns:24px minmax(0,1fr) auto; align-items:center; gap:8px; padding:5px 9px; text-align:left; }
+        .child-list button b { width:22px; height:22px; display:grid; place-items:center; border:1px solid var(--line); color:var(--active); font:800 9px/1 ui-monospace,monospace; }
+        .child-list button span { min-width:0; display:flex; flex-direction:column; gap:4px; }
+        .child-list button span strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:700 10px/1 ui-monospace,monospace; }
+        .child-list button span small { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font:600 8px/1 ui-monospace,monospace; }
         .child-list button em { color:var(--muted); font:700 8px/1 ui-monospace,monospace; font-style:normal; }
         .child-empty { color:var(--muted); border:1px dashed var(--line); padding:10px; font:650 9px/1 ui-monospace,monospace; text-align:center; }
-        .child-assign { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; margin-top:7px; }
-        .child-assign select, .child-assign button { min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:10px; }
-        .child-assign button { color:var(--active); font:700 9px/1 ui-monospace,monospace; letter-spacing:.06em; }
+        .child-open { margin:8px 0 4px; padding:8px; border:1px solid var(--line); background:rgba(255,255,255,.012); }
+        .child-open > span, .child-assign-label { display:block; color:var(--muted); margin-bottom:6px; font:700 8px/1.2 ui-monospace,monospace; letter-spacing:.08em; }
+        .child-open > div, .child-assign { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; }
+        .child-open select, .child-open button, .child-assign select, .child-assign button { min-height:34px; border:1px solid var(--line); background:#101316; color:var(--text); padding:0 8px; font-size:10px; }
+        .child-open button, .child-assign button { color:var(--active); font:700 9px/1 ui-monospace,monospace; letter-spacing:.06em; }
+        .child-assign-label { margin-top:10px; }
         .layout-savebar { min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:14px; padding:10px 14px; border-top:1px solid var(--line-strong); background:#0d1013; }
         .layout-savebar span { color:var(--muted); font:700 9px/1.4 ui-monospace,monospace; letter-spacing:.06em; }
         .layout-position { display:grid; grid-template-columns:repeat(4,1fr); gap:7px; }

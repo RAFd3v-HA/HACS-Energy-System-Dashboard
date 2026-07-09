@@ -1,8 +1,22 @@
-# Energy System Dashboard 0.3.1
+# Energy System Dashboard 0.3.2
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## Neu in 0.3.1
+## Neu in 0.3.2
+
+### Parent/Child-Inspector
+
+- Direkte Unterbereiche werden immer in einer eigenen Liste angezeigt.
+- Das Dropdown **UNTERBEREICH ÖFFNEN** enthält auch frisch mit `+ UNTERBEREICH` angelegte Children.
+- **BESTEHENDEN BEREICH ALS UNTERBEREICH ZUORDNEN** ist davon getrennt und zeigt nur noch zuordenbare Bereiche.
+
+### Hierarchische Kacheldarstellung
+
+- Parent-Bereiche werden optisch stärker und größer gewichtet.
+- Parent-Kacheln zeigen die Anzahl ihrer Unterbereiche.
+- Child-Kacheln werden kompakter und zeigen `↳ Parentname`.
+- Neue Unterbereiche starten im magnetischen Layout mit 2 × 1 Rasterzellen.
+
 
 - Stockwerke werden in `SYSTEM` und `ELEKTRISCH` als gemeinsamer Gebäudestapel dargestellt
 - jedes Stockwerk besitzt die seitliche, vertikale Stockwerksreferenz aus dem Gebäudeeditor
@@ -190,7 +204,7 @@ Die Lovelace-Karte verwendet dieselbe zentral gespeicherte Topologie. Es werden 
 ## JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.3.1
+/energy_system_dashboard/energy-system-card.js?v=0.3.2
 ```
 
 Home Assistant:
@@ -200,7 +214,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.3.1
+URL: /energy_system_dashboard/energy-system-card.js?v=0.3.2
 Typ: JavaScript-Modul
 ```
 
@@ -209,7 +223,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.1
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.3.2
       type: module
 ```
 
