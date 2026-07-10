@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.5.5";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.5.6";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -1322,7 +1322,11 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const config = this._config;
     const gridFlow = this._gridFlow();
     const nodes = [];
-    if (this._isConfiguredGrid(config)) nodes.push(this._node({ code:"GRID", name:config.grid.name || "Netz", main:this._formatPowerW(gridFlow.power), state:gridFlow.label, status:gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good", custom:`<div class="mini-line daily-value"><span>BEZUG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.import_energy_entity))}</strong></div><div class="mini-line daily-value"><span>EINSPEISUNG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.export_energy_entity))}</strong></div>`, metaLeft:"REFERENCE", metaRight:config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +" }));
+    if (this._isConfiguredGrid(config)) {
+      const currentImport = gridFlow.mode === "import" && gridFlow.power !== null ? Math.abs(gridFlow.power) : 0;
+      const currentExport = gridFlow.mode === "export" && gridFlow.power !== null ? -Math.abs(gridFlow.power) : 0;
+      nodes.push(this._node({ code:"GRID", name:config.grid.name || "Netz", main:this._formatPowerW(gridFlow.power), state:gridFlow.label, status:gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good", custom:`<div class="mini-line grid-current"><span>BEZUG AKTUELL</span><strong>${this._formatPowerW(currentImport)}</strong></div><div class="mini-line grid-current"><span>EINSPEISUNG AKTUELL</span><strong>${this._formatPowerW(currentExport)}</strong></div><div class="mini-line daily-value"><span>BEZUG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.import_energy_entity))}</strong></div><div class="mini-line daily-value"><span>EINSPEISUNG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.export_energy_entity))}</strong></div>`, metaLeft:"REFERENCE", metaRight:config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +" }));
+    }
     const solar = (config.generation || []).filter((item) => item.type === "solar" && this._isConfiguredGeneration(item));
     const other = (config.generation || []).filter((item) => item.type !== "solar" && this._isConfiguredGeneration(item));
     const pvNode = this._renderGenerationGroup(solar); if (pvNode) nodes.push(pvNode);
@@ -1339,18 +1343,20 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const railClass=(prefix,first,last)=>`${prefix}-route ${first ? "route-first" : ""} ${last ? "route-last" : ""}`;
     const electricVerticalClass = route.electricRailActive ? "" : " flow-static";
     const electricBranchClass = route.electricBranchActive ? "" : " flow-static";
-    const electricRoute = route.electricRail ? `<div class="${railClass("electric",route.electricFirst,route.electricLast)} flow-electric"><i class="route-vertical flow-segment vertical${electricVerticalClass}"></i>${route.electricBranch ? `<i class="route-branch flow-segment horizontal${electricBranchClass}"></i>${electricPower === null ? "" : `<span class="route-load electric-route-load">${this._formatPowerW(electricPower)}</span>`}` : ""}</div>` : `<div class="electric-route route-empty"></div>`;
+    const electricRoute = route.electricRail ? `<div class="${railClass("electric",route.electricFirst,route.electricLast)} flow-electric"><i class="route-vertical flow-segment vertical${electricVerticalClass}"></i>${route.electricBranch ? `<i class="route-branch flow-segment horizontal${electricBranchClass}"></i>` : ""}</div>` : `<div class="electric-route route-empty"></div>`;
     const thermalDetails = [supply === null ? "" : `<span>VL ${this._formatTemp(supply)}</span>`,ret === null ? "" : `<small>RL ${this._formatTemp(ret)}</small>`,delta === null ? "" : `<em>ΔT ${delta.toLocaleString("de-DE",{maximumFractionDigits:1})} K</em>`,thermalPower === null ? "" : `<strong>${this._formatPowerW(thermalPower)}</strong>`,thermalToday === null ? "" : `<small class="daily-value">HEUTE ${this._formatEnergyKWh(thermalToday)}</small>`].join("");
     const thermalVerticalClass = route.thermalRailActive ? "" : " flow-static";
     const thermalBranchClass = route.thermalBranchActive ? "" : " flow-static";
     const thermalRoute = route.thermalRail ? `<div class="${railClass("thermal",route.thermalFirst,route.thermalLast)} flow-thermal"><i class="route-vertical flow-segment vertical flow-up${thermalVerticalClass}"></i>${route.thermalBranch ? `<i class="route-branch flow-segment horizontal flow-left${thermalBranchClass}"></i>${thermalDetails ? `<div class="route-thermal-values">${thermalDetails}</div>` : ""}` : ""}</div>` : `<div class="thermal-route route-empty"></div>`;
-    return `<section class="combined-floor-group">${electricRoute}<div class="combined-floor-shell"><div class="combined-floor-junction"><aside class="combined-floor-indicator"><strong>${this._esc(level.name)}</strong>${electricPower === null ? "" : `<span>${this._formatPowerW(electricPower)}</span>`}${electricToday === null ? "" : `<span class="daily-value">HEUTE ${this._formatEnergyKWh(electricToday)}</span>`}${room === null ? "" : `<span>Ø RAUM ${this._formatTemp(room)}</span>`}</aside></div><i class="floor-to-level-line" aria-hidden="true"></i><div class="combined-floor-content">${roots.map((area)=>this._renderAreaGroup(area,config,false,"combined")).join("")}</div></div>${thermalRoute}</section>`;
+    const electricFloorLink = route.electricBranch ? `<i class="floor-junction-link electric-floor-link flow-electric flow-segment horizontal${electricBranchClass}" aria-hidden="true"></i>` : `<i class="floor-junction-link floor-link-empty" aria-hidden="true"></i>`;
+    const thermalFloorLink = route.thermalBranch ? `<i class="floor-junction-link thermal-floor-link flow-thermal flow-segment horizontal flow-left${thermalBranchClass}" aria-hidden="true"></i>` : `<i class="floor-junction-link floor-link-empty" aria-hidden="true"></i>`;
+    return `<section class="combined-floor-group">${electricRoute}<div class="combined-floor-shell"><div class="combined-floor-junction">${electricFloorLink}<aside class="combined-floor-indicator"><strong>${this._esc(level.name)}</strong>${electricPower === null ? "" : `<span class="floor-power">${this._formatPowerW(electricPower)}</span>`}${electricToday === null ? "" : `<span class="daily-value">HEUTE ${this._formatEnergyKWh(electricToday)}</span>`}${room === null ? "" : `<span>Ø RAUM ${this._formatTemp(room)}</span>`}</aside>${thermalFloorLink}</div><i class="floor-to-level-line" aria-hidden="true"></i><div class="combined-floor-content">${roots.map((area)=>this._renderAreaGroup(area,config,false,"combined")).join("")}</div></div>${thermalRoute}</section>`;
   }
 
   _combinedFlowState(config = this._config) {
     const levels=this._buildingLevels(config).filter((level)=>this._visualRootAreas(level.id,config).some((area)=>this._branchHasConfig(area,"electric",config)||this._branchHasConfig(area,"thermal",config)||this._branchClimateCurrent(area,config).length));
-    const hasElectric=levels.some((level)=>this._levelPower(level,config)!==null || this._levelTodayEnergy(level,config)!==null);
-    const hasThermal=levels.some((level)=>this._levelThermalPower(level,config)!==null || this._levelThermalTodayEnergy(level,config)!==null || this._levelSupplyTemperature(level,config)!==null || this._levelReturnTemperature(level,config)!==null);
+    const hasElectric=levels.length > 0;
+    const hasThermal=levels.length > 0;
     const electricActive=levels.some((level)=>{ const value=this._levelPower(level,config); return value!==null && Math.abs(value)>=0.5; });
     const thermalActive=levels.some((level)=>{ const value=this._levelThermalPower(level,config); return value!==null && Math.abs(value)>=0.5; });
     return {levels,hasElectric,hasThermal,electricActive,thermalActive};
@@ -1359,8 +1365,10 @@ class EnergySystemDashboardPanel extends HTMLElement {
   _renderCombinedBuilding(config = this._config, flowState = null) {
     const state=flowState || this._combinedFlowState(config), levels=state.levels;
     if (!levels.length) return this._empty("Noch keine konfigurierten Gebäudeebenen vorhanden.");
-    const electricFlags=levels.map((level)=>this._levelPower(level,config)!==null || this._levelTodayEnergy(level,config)!==null);
-    const thermalFlags=levels.map((level)=>this._levelThermalPower(level,config)!==null || this._levelThermalTodayEnergy(level,config)!==null || this._levelSupplyTemperature(level,config)!==null || this._levelReturnTemperature(level,config)!==null);
+    // In der kombinierten Systemansicht ist jedes sichtbare Geschoss ein Topologie-Knoten.
+    // Die Leitungen bleiben daher statisch bis zum Geschoss sichtbar; nur echte Leistung animiert sie.
+    const electricFlags=levels.map(()=>true);
+    const thermalFlags=levels.map(()=>true);
     const electricFlow=levels.map((level)=>{ const value=this._levelPower(level,config); return value!==null && value>=0.5; });
     const thermalFlow=levels.map((level)=>{ const value=this._levelThermalPower(level,config); return value!==null && value>=0.5; });
     const firstElectric=electricFlags.indexOf(true), lastElectric=electricFlags.lastIndexOf(true), firstThermal=thermalFlags.indexOf(true), lastThermal=thermalFlags.lastIndexOf(true);
@@ -2892,19 +2900,24 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .combined-entry { height:48px; position:relative; max-width:1500px; margin:0 auto; overflow:visible; }
         .combined-entry-spacer { height:32px; max-width:1500px; margin:0 auto; }
         .combined-entry .entry-drop, .combined-entry .entry-rise { left:50%; width:2px; }
-        .combined-entry .entry-run { top:24px; height:2px; }
-        .electric-entry .entry-drop { top:0; bottom:22px; }
-        .electric-entry .entry-run { left:24px; right:50%; }
-        .thermal-entry .entry-rise { top:22px; bottom:0; }
-        .thermal-entry .entry-run { left:50%; right:24px; }
+        .combined-entry .entry-run { height:2px; }
+        .electric-entry .entry-drop { top:0; bottom:0; }
+        .electric-entry .entry-run { left:24px; right:50%; bottom:0; top:auto; }
+        .thermal-entry .entry-rise { top:0; bottom:0; }
+        .thermal-entry .entry-run { left:50%; right:24px; top:0; }
         .combined-building { --route-gutter:56px; max-width:1500px; margin:0 auto; position:relative; background:transparent; }
         .combined-floor-group { position:relative; display:grid; grid-template-columns:var(--route-gutter) minmax(0,1fr) var(--route-gutter); align-items:stretch; min-height:0; background:transparent; transition:min-height .2s ease; }
         .combined-floor-shell { grid-column:2; position:relative; min-width:0; display:flex; flex-direction:column; align-items:stretch; border-left:1px solid var(--line-strong); border-right:1px solid var(--line-strong); border-top:1px solid var(--line-strong); background:#0e1216; padding:18px 30px 22px; }
         .combined-floor-group:last-child .combined-floor-shell { border-bottom:1px solid var(--line-strong); }
-        .combined-floor-junction { min-height:42px; display:flex; align-items:center; justify-content:center; position:relative; }
-        .combined-floor-indicator { z-index:7; display:flex; align-items:center; gap:10px; min-height:32px; padding:0 12px; border:1px solid var(--line-strong); background:#101418; white-space:nowrap; }
-        .combined-floor-indicator strong { font:800 10px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .combined-floor-junction { min-height:42px; display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; position:relative; margin-left:-30px; margin-right:-30px; }
+        .combined-floor-indicator { grid-column:2; z-index:7; display:flex; align-items:center; gap:12px; min-height:34px; padding:0 14px; border:1px solid var(--line-strong); background:#101418; white-space:nowrap; }
+        .combined-floor-indicator strong { font:800 11px/1 ui-monospace,monospace; letter-spacing:.1em; }
         .combined-floor-indicator span { color:var(--muted); font:700 8px/1 ui-monospace,monospace; }
+        .combined-floor-indicator .floor-power { color:var(--active); font-size:12px; font-weight:850; }
+        .floor-junction-link { display:block; width:100%; height:2px; align-self:center; position:relative; }
+        .electric-floor-link { grid-column:1; }
+        .thermal-floor-link { grid-column:3; }
+        .floor-link-empty { background:transparent; }
         .floor-to-level-line { display:block; width:1px; height:18px; margin:0 auto; background:var(--line-strong); }
         .combined-floor-content { align-self:stretch; min-width:0; min-height:86px; padding:18px 34px; display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:0; border:1px solid var(--line); background-color:#12161a; background-image:linear-gradient(to right,rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.025) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; }
         .combined-floor-content > .area-group { position:relative; grid-column:auto !important; grid-row:auto !important; align-self:center; min-width:180px; flex:0 1 calc((100% / 12) * var(--area-span,3) - 8px); margin:4px; }
@@ -2915,14 +2928,16 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .route-vertical { position:absolute; width:2px; top:0; bottom:0; }
         .electric-route .route-vertical { left:24px; }
         .thermal-route .route-vertical { right:24px; }
-        .route-first .route-vertical { top:39px; }
-        .route-last .route-vertical { bottom:calc(100% - 39px); }
-        .route-first.route-last .route-vertical { top:39px; bottom:calc(100% - 39px); }
+        .electric-route.route-first .route-vertical { top:0; }
+        .electric-route.route-last .route-vertical { bottom:calc(100% - 39px); }
+        .electric-route.route-first.route-last .route-vertical { top:0; bottom:calc(100% - 39px); }
+        .thermal-route.route-first .route-vertical { top:39px; }
+        .thermal-route.route-last .route-vertical { bottom:0; }
+        .thermal-route.route-first.route-last .route-vertical { top:39px; bottom:0; }
         .route-branch { position:absolute; top:39px; height:2px; }
         .electric-route .route-branch { left:24px; right:0; }
         .thermal-route .route-branch { left:0; right:24px; }
         .route-load { position:absolute; z-index:7; top:39px; min-width:58px; padding:3px 7px; border:1px solid var(--line); background:#0b0e11; text-align:center; font:700 9px/1 ui-monospace,monospace; transform:translateY(calc(-100% - 8px)); }
-        .electric-route-load { left:30px; color:var(--active); }
         .route-thermal-values { position:absolute; z-index:7; top:39px; right:30px; display:flex; align-items:center; gap:8px; min-height:24px; max-width:calc(100% - 36px); padding:3px 8px; border:1px solid var(--line); background:#0b0e11; color:var(--thermal); font:700 8px/1 ui-monospace,monospace; white-space:nowrap; transform:translateY(calc(-100% - 8px)); }
         .route-thermal-values small, .route-thermal-values em { color:var(--muted); font-size:8px; font-style:normal; }
         .route-thermal-values strong { color:var(--text); }

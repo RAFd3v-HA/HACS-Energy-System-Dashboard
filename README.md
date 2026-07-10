@@ -1,6 +1,6 @@
-# Energy System Dashboard V0.5.5
+# Energy System Dashboard V0.5.6
 
-### V0.5.5
+### V0.5.6
 
 - Thermische Verteilung in `SYSTEM` hat dieselbe Maximalbreite wie die elektrische Verteilung.
 - Elektrische und thermische Gebäude-Flows werden nur gerendert, wenn mindestens eine Ebene ein passendes Ziel besitzt.
@@ -9,7 +9,7 @@
 - Keine thermische Sammelschiene mehr, die ohne thermische Stockwerksmesswerte ins Leere läuft.
 
 
-## V0.5.5 – Segmentweiser Flow
+## V0.5.6 – Segmentweiser Flow
 
 - Topologielinien bleiben immer sichtbar.
 - Elektrische und thermische Abgänge werden nur bei tatsächlich positivem Flow animiert.
@@ -18,7 +18,7 @@
 - Sammelschienen enden weiterhin am letzten tatsächlich angebundenen Geschoss.
 
 
-## V0.5.5 – Kombinierter Flow-Fix
+## V0.5.6 – Kombinierter Flow-Fix
 
 - Animierte elektrische Abgänge zu jeder Gebäudeebene sind in SYSTEM wieder sichtbar; der elektrische Flow läuft über eine linke Sammelschiene von oben.
 - Der thermische Flow läuft spiegelbildlich über eine rechte Sammelschiene von unten nach oben. Beide Flows erreichen dieselben Stockwerke ohne sich zu überlagern.
@@ -231,7 +231,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.5.5
+/energy_system_dashboard/energy-system-card.js?v=0.5.6
 ```
 
 Home Assistant:
@@ -241,7 +241,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.5.5
+URL: /energy_system_dashboard/energy-system-card.js?v=0.5.6
 Typ: JavaScript-Modul
 ```
 
@@ -250,7 +250,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.5.5
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.5.6
       type: module
 ```
 
@@ -280,6 +280,15 @@ Das Dashboard kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-P
 - Thermische Flows werden nur zu einem tatsächlich sichtbaren Pufferspeicher gerendert.
 
 
-## V0.5.5 – Flow-Routing außerhalb des Gebäudeblocks
+## V0.5.6 – Flow-Routing außerhalb des Gebäudeblocks
 
 Die kombinierte SYSTEM-Ansicht führt elektrische und thermische Sammelschienen außerhalb der Stockwerksframes. Elektrische Abgänge treten von links in den Geschossframe ein, thermische Abgänge von rechts. Die jeweilige Sammelschiene endet am letzten tatsächlich angebundenen Stockwerk. Vom Geschossknoten zu den Bereichsframes wird nur eine statische neutrale Topologielinie gezeichnet. Ohne thermische Stockwerkswerte bleibt zwischen Gebäude und thermischer Verteilung ein definierter Abstand.
+
+
+## V0.5.6 – Geschossanschlüsse und GRID-Anzeige
+
+- Elektrische und thermische Außenschienen führen jetzt bis direkt an den Geschossname-Frame.
+- Vom Geschossframe zu den Bereichsframes bleibt nur die neutrale statische Topologielinie.
+- Die separate Wattbox in der Außenschiene ist entfernt; die Geschossleistung steht größer und gelb direkt neben dem Geschossnamen.
+- Jede sichtbare Ebene bleibt in der kombinierten Ansicht topologisch angebunden; Animation erscheint nur bei tatsächlichem Leistungsfluss.
+- GRID zeigt Bezug/Einspeisung aktuell sowie Bezug/Einspeisung heute explizit an.
