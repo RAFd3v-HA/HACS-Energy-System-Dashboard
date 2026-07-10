@@ -35,7 +35,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 11,
+    "version": 12,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -138,7 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.4.2",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.4.4",
                 }
             },
             require_admin=False,
@@ -290,7 +290,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 11
+    normalized["version"] = 12
 
     for key in ("generation", "storage", "heating", "calculations", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -320,6 +320,8 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         module["name"] = str(module.get("name") or f"Erzeuger {index + 1}")
         module["power_entity"] = str(module.get("power_entity") or "")
         module["energy_entity"] = str(module.get("energy_entity") or "")
+        module["reduction_entity"] = str(module.get("reduction_entity") or "")
+        module["reduction_active_states"] = str(module.get("reduction_active_states") or "on,true,1,active,reduced,begrenzt")
         generation.append(module)
     normalized["generation"] = generation
 
@@ -357,10 +359,17 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             "supply_entity",
             "return_entity",
             "temperature_entity",
+            "target_temperature_entity",
             "thermal_power_entity",
             "thermal_energy_entity",
         ):
             module[key] = str(module.get(key) or "")
+        module["status_mode"] = "entity" if str(module.get("status_mode") or ("entity" if module.get("status_entity") else "power")) == "entity" else "power"
+        try:
+            module["heating_power_threshold_w"] = max(0.0, float(module.get("heating_power_threshold_w", 100)))
+        except (TypeError, ValueError):
+            module["heating_power_threshold_w"] = 100.0
+        module["heating_states"] = str(module.get("heating_states") or "heating,active,on,1,ein")
         heating.append(module)
     normalized["heating"] = heating
 

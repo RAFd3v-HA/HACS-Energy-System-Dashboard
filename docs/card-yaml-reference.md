@@ -93,6 +93,14 @@ show_daily_energy: true
 # DISCHARGE
 #
 show_status: true
+
+# ------------------------------------------------------------
+# UNTERBEREICHE
+# ------------------------------------------------------------
+# false  Parent-Bereiche starten eingeklappt (Standard)
+# true   Children standardmäßig anzeigen
+#
+expand_children: false
 ```
 
 ---
@@ -109,6 +117,7 @@ show_status: true
 | `default_floor` | string | erstes verfügbares Stockwerk | Start-Stockwerk |
 | `show_daily_energy` | boolean | `true` | Energie heute anzeigen |
 | `show_status` | boolean | `true` | Statuskennzeichnungen anzeigen |
+| `expand_children` | boolean | `false` | Unterbereiche standardmäßig aufgeklappt anzeigen |
 
 ---
 

@@ -1,4 +1,4 @@
-# Mobile layout in V0.4.2
+# Mobile layout in V0.4.3
 
 At viewport widths up to 640 px the renderer switches to a dedicated mobile layout.
 

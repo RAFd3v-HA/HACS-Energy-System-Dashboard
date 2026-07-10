@@ -79,3 +79,8 @@ view: system
 # display: compact
 # show_daily_energy: false
 # show_status: false
+
+# Alle Parent/Child-Details standardmäßig öffnen
+type: custom:energy-system-card
+view: building
+expand_children: true

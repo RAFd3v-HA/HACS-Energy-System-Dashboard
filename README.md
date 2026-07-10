@@ -1,6 +1,10 @@
-# Energy System Dashboard 0.4.2
+## V0.4.4
 
-## V0.4.2 – Mobile / Responsive Layout
+- Netzleistung wird normiert dargestellt: **Bezug positiv, Einspeisung negativ**. Die konfigurierte Vorzeichenrichtung der Quell-Entity bleibt erhalten und dient nur zur Interpretation des Rohwerts.
+
+# Energy System Dashboard V0.4.4
+
+## V0.4.4 – Mobile / Responsive Layout
 
 Bis 640 px nutzt das Panel eine eigene mobile Darstellung. Das Desktop-Einlinienschema bleibt unverändert. Stockwerke werden mobil als vertikaler Stack mit horizontalem Stockwerkskopf gerendert; Parent/Child-Hierarchien bleiben verschachtelt. Modulfelder laufen einspaltig, Navigation bleibt horizontal scrollbar und Formulare erhalten größere Touch-Ziele. Der magnetische 12-Spalten-Editor bleibt technisch maßstabsstabil und wird auf kleinen Displays horizontal scrollbar.
 
@@ -8,7 +12,7 @@ Siehe auch `MOBILE.md`.
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## V0.4.2 – Quellen-Dropdown im Berechnungseditor
+## V0.4.4 – Quellen-Dropdown im Berechnungseditor
 
 - Live-Updates von Home Assistant ersetzen ein gerade aktives Dropdown oder Eingabefeld im Reiter **BERECHNUNGEN** nicht mehr.
 - Solange ein Berechnungsfeld fokussiert ist, wird ein Live-Neurendering zurückgestellt.
@@ -185,7 +189,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.4.2
+/energy_system_dashboard/energy-system-card.js?v=V0.4.4
 ```
 
 Home Assistant:
@@ -195,7 +199,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.4.2
+URL: /energy_system_dashboard/energy-system-card.js?v=V0.4.4
 Typ: JavaScript-Modul
 ```
 
@@ -204,7 +208,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.2
+    - url: /energy_system_dashboard/energy-system-card.js?v=V0.4.4
       type: module
 ```
 
@@ -223,3 +227,12 @@ Vollständige Karten-YAML-Dokumentation:
 ## Datenquellen
 
 Das Dashboard kommuniziert nicht direkt mit Tasmota, Shelly, Viessmann oder my-PV. Es verwendet vorhandene Home-Assistant-Entities. Die zentrale Berechnungsengine kombiniert diese Messwerte und kann ausgewählte Ergebnisse wiederum als Home-Assistant-Sensoren bereitstellen.
+
+
+## V0.4.4
+- Stockwerksreihenfolge per Drag & Drop am seitlichen Stockwerksindikator.
+- PV-Begrenzungs-Entity: `PRODUCTION / REDUCED` und grün/orange wechselnder Statuspunkt.
+- Parent/Child in Übersichten standardmäßig eingeklappt; Klick auf Parent klappt rekursiv auf. Lovelace: `expand_children`.
+- Heizstab: Status wahlweise per Status-Entity oder automatisch aus Leistung mit konfigurierbarem Schwellwert (Standard 100 W).
+- Heizstab: optionale Zieltemperatur-Entity.
+- Thermische Flows werden nur zu einem tatsächlich sichtbaren Pufferspeicher gerendert.

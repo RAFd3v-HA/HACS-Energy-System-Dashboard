@@ -1,4 +1,4 @@
-const PANEL_MODULE_URL = "/energy_system_dashboard/energy-system-dashboard.js?v=0.4.2";
+const PANEL_MODULE_URL = "/energy_system_dashboard/energy-system-dashboard.js?v=0.4.4";
 const VALID_VIEWS = ["system", "electrical", "thermal", "building"];
 const VALID_DISPLAYS = ["full", "compact"];
 
@@ -19,6 +19,7 @@ class EnergySystemCard extends HTMLElement {
       floor_selector: true,
       show_daily_energy: true,
       show_status: true,
+      expand_children: false,
     };
   }
 
@@ -58,6 +59,7 @@ class EnergySystemCard extends HTMLElement {
         { name: "default_floor", selector: { text: {} } },
         { name: "show_daily_energy", selector: { boolean: {} } },
         { name: "show_status", selector: { boolean: {} } },
+        { name: "expand_children", selector: { boolean: {} } },
       ],
       computeLabel: (schema) => ({
         view: "Ansicht",
@@ -67,6 +69,7 @@ class EnergySystemCard extends HTMLElement {
         default_floor: "Standard-Stockwerk",
         show_daily_energy: "Energie heute anzeigen",
         show_status: "Statuswerte anzeigen",
+        expand_children: "Unterbereiche standardmäßig aufklappen",
       }[schema.name]),
       computeHelper: (schema) => ({
         view: "Wählt die read-only Ansicht der zentral konfigurierten Energy-System-Topologie.",
@@ -76,6 +79,7 @@ class EnergySystemCard extends HTMLElement {
         default_floor: "Optional. Muss exakt einem konfigurierten Stockwerksnamen entsprechen, z. B. EG oder Galerie.",
         show_daily_energy: "Blendet die aus Recorder-Statistiken berechnete Energie des aktuellen Tages ein oder aus.",
         show_status: "Blendet Statuskennzeichnungen wie HEATING, IMPORT oder IDLE ein oder aus.",
+        expand_children: "true zeigt alle Parent/Child-Details direkt; false startet platzsparend eingeklappt. Ein Klick auf einen Parent klappt lokal auf.",
       }[schema.name]),
       assertConfig: (config) => {
         if (config.view !== undefined && !VALID_VIEWS.includes(config.view)) {
@@ -97,6 +101,7 @@ class EnergySystemCard extends HTMLElement {
       default_floor: config?.default_floor || "",
       show_daily_energy: config?.show_daily_energy !== false,
       show_status: config?.show_status !== false,
+      expand_children: config?.expand_children === true,
     };
     if (!VALID_VIEWS.includes(next.view)) {
       throw new Error(`Ungültige Ansicht "${next.view}". Erlaubt: ${VALID_VIEWS.join(", ")}.`);
