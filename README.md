@@ -1,4 +1,13 @@
-# Energy System Dashboard V0.5.7
+# Energy System Dashboard V0.5.9
+
+
+## V0.5.9 – Anlagenname aus Home Assistant
+
+- PV- und Batteriesammelframes verwenden bei genau einer Quelle bevorzugt den echten Home-Assistant-Gerätenamen.
+- Falls kein Gerätename verfügbar ist, wird der gemeinsame Präfix der Friendly Names vor `|` beziehungsweise `·` als Anlagenname verwendet.
+- Beispiel: `VX3 Ost-West | PV-Leistung` und `VX3 Ost-West | Batterie` werden als `VX3 Ost-West` angezeigt.
+- Generische manuelle Namen wie `PV` oder `Batterie` überschreiben den erkannten Anlagenname nicht mehr.
+- Die in V0.5.8 begonnene Geschosskopf-Geometrie bleibt enthalten: elektrische und thermische Außenrouten docken an die Kopfzeile des Geschossblocks an.
 
 ### V0.5.7
 
