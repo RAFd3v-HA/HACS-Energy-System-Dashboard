@@ -1490,7 +1490,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const buffer=config.buffer||{}, bufferVisible=this._isConfiguredBuffer(buffer);
     const toBuffer=bufferVisible ? heating.filter((module)=>module.target === "buffer") : [];
     const directRoom=heating.filter((module)=>module.target !== "buffer" || !bufferVisible);
-    const house=this._house(config), houseLabel=house ? this._formatPowerW(this._areaPower(house,config)) : "";
+    const house=this._houseArea(config), houseLabel=house ? this._formatPowerW(this._areaPower(house,config)) : "";
     const combinedFlow=this._combinedFlowState(config);
     const thermalTotal=combinedFlow.levels.map((level)=>this._levelThermalPower(level,config)).filter((value)=>value!==null).reduce((sum,value)=>sum+value,0);
     const thermalLabel=combinedFlow.levels.some((level)=>this._levelThermalPower(level,config)!==null) ? this._formatPowerW(thermalTotal) : "";
