@@ -1,21 +1,13 @@
-# Energy System Dashboard V0.5.9
+# Energy System Dashboard V0.6.0
 
 
-## V0.5.9 – Anlagenname aus Home Assistant
+## V0.6.0 – Flow-Routing, Parent-Details und Raumklima
 
-- PV- und Batteriesammelframes verwenden bei genau einer Quelle bevorzugt den echten Home-Assistant-Gerätenamen.
-- Falls kein Gerätename verfügbar ist, wird der gemeinsame Präfix der Friendly Names vor `|` beziehungsweise `·` als Anlagenname verwendet.
-- Beispiel: `VX3 Ost-West | PV-Leistung` und `VX3 Ost-West | Batterie` werden als `VX3 Ost-West` angezeigt.
-- Generische manuelle Namen wie `PV` oder `Batterie` überschreiben den erkannten Anlagenname nicht mehr.
-- Die in V0.5.8 begonnene Geschosskopf-Geometrie bleibt enthalten: elektrische und thermische Außenrouten docken an die Kopfzeile des Geschossblocks an.
-
-### V0.5.7
-
-- Thermische Verteilung in `SYSTEM` hat dieselbe Maximalbreite wie die elektrische Verteilung.
-- Elektrische und thermische Gebäude-Flows werden nur gerendert, wenn mindestens eine Ebene ein passendes Ziel besitzt.
-- 0-W-Abgänge bleiben als statische Topologie sichtbar, werden aber nicht animiert.
-- Thermische Leitungen mit VL/RL, aber ohne gemessene thermische Leistung, bleiben statisch blau.
-- Keine thermische Sammelschiene mehr, die ohne thermische Stockwerksmesswerte ins Leere läuft.
+- Elektrische Sammelschiene links und thermische Sammelschiene rechts bleiben vollständig außerhalb des Gebäudeblocks. Die seitlichen Abgänge enden an der Außenkante des Geschoss-Headers und laufen nicht mehr durch die Stockwerksfläche.
+- Bei genau einer PV-Anlage oder genau einem Batteriespeicher wird keine redundante Quellen-/Teilspeicherliste unter dem Hauptframe angezeigt.
+- Parent-Namen werden nicht mehr durch den Hierarchiehinweis abgeschnitten; die Hierarchieinformation steht in einer eigenen Zeile.
+- Parent-Details lassen sich über einen eigenen Auf-/Zuklapp-Button zuverlässig öffnen.
+- Climate-Entities können optional separate IST-/SOLL-Temperatursensoren überschreiben. Ist das Thermostat `off`, wird die Solltemperatur nicht angezeigt.
 
 
 ## V0.5.7 – Segmentweiser Flow
