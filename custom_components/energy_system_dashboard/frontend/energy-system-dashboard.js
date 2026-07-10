@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.5.4";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.5.5";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -1336,12 +1336,14 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (!roots.length) return "";
     const electricPower=this._levelPower(level,config), electricToday=this._levelTodayEnergy(level,config), thermalPower=this._levelThermalPower(level,config), thermalToday=this._levelThermalTodayEnergy(level,config), supply=this._levelSupplyTemperature(level,config), ret=this._levelReturnTemperature(level,config), room=this._levelAverageRoomTemperature(level,config);
     const delta=supply !== null && ret !== null ? supply-ret : null;
-    const electricActive = electricPower !== null && Math.abs(electricPower) >= 0.5;
-    const thermalActive = thermalPower !== null && Math.abs(thermalPower) >= 0.5;
-    const railClass=(prefix,active,first,last)=>`${prefix}-route ${active ? "" : "flow-static"} ${first ? "route-first" : ""} ${last ? "route-last" : ""}`;
-    const electricRoute = route.electricRail ? `<div class="${railClass("electric",electricActive,route.electricFirst,route.electricLast)} flow-electric"><i class="route-vertical flow-segment vertical"></i>${route.electricBranch ? `<i class="route-branch flow-segment horizontal"></i>${electricPower === null ? "" : `<span class="route-load electric-route-load">${this._formatPowerW(electricPower)}</span>`}` : ""}</div>` : `<div class="electric-route route-empty"></div>`;
+    const railClass=(prefix,first,last)=>`${prefix}-route ${first ? "route-first" : ""} ${last ? "route-last" : ""}`;
+    const electricVerticalClass = route.electricRailActive ? "" : " flow-static";
+    const electricBranchClass = route.electricBranchActive ? "" : " flow-static";
+    const electricRoute = route.electricRail ? `<div class="${railClass("electric",route.electricFirst,route.electricLast)} flow-electric"><i class="route-vertical flow-segment vertical${electricVerticalClass}"></i>${route.electricBranch ? `<i class="route-branch flow-segment horizontal${electricBranchClass}"></i>${electricPower === null ? "" : `<span class="route-load electric-route-load">${this._formatPowerW(electricPower)}</span>`}` : ""}</div>` : `<div class="electric-route route-empty"></div>`;
     const thermalDetails = [supply === null ? "" : `<span>VL ${this._formatTemp(supply)}</span>`,ret === null ? "" : `<small>RL ${this._formatTemp(ret)}</small>`,delta === null ? "" : `<em>ΔT ${delta.toLocaleString("de-DE",{maximumFractionDigits:1})} K</em>`,thermalPower === null ? "" : `<strong>${this._formatPowerW(thermalPower)}</strong>`,thermalToday === null ? "" : `<small class="daily-value">HEUTE ${this._formatEnergyKWh(thermalToday)}</small>`].join("");
-    const thermalRoute = route.thermalRail ? `<div class="${railClass("thermal",thermalActive,route.thermalFirst,route.thermalLast)} flow-thermal"><i class="route-vertical flow-segment vertical flow-up"></i>${route.thermalBranch ? `<i class="route-branch flow-segment horizontal flow-left"></i>${thermalDetails ? `<div class="route-thermal-values">${thermalDetails}</div>` : ""}` : ""}</div>` : `<div class="thermal-route route-empty"></div>`;
+    const thermalVerticalClass = route.thermalRailActive ? "" : " flow-static";
+    const thermalBranchClass = route.thermalBranchActive ? "" : " flow-static";
+    const thermalRoute = route.thermalRail ? `<div class="${railClass("thermal",route.thermalFirst,route.thermalLast)} flow-thermal"><i class="route-vertical flow-segment vertical flow-up${thermalVerticalClass}"></i>${route.thermalBranch ? `<i class="route-branch flow-segment horizontal flow-left${thermalBranchClass}"></i>${thermalDetails ? `<div class="route-thermal-values">${thermalDetails}</div>` : ""}` : ""}</div>` : `<div class="thermal-route route-empty"></div>`;
     return `<section class="combined-floor-group">${electricRoute}<div class="combined-floor-shell"><div class="combined-floor-junction"><aside class="combined-floor-indicator"><strong>${this._esc(level.name)}</strong>${electricPower === null ? "" : `<span>${this._formatPowerW(electricPower)}</span>`}${electricToday === null ? "" : `<span class="daily-value">HEUTE ${this._formatEnergyKWh(electricToday)}</span>`}${room === null ? "" : `<span>Ø RAUM ${this._formatTemp(room)}</span>`}</aside></div><i class="floor-to-level-line" aria-hidden="true"></i><div class="combined-floor-content">${roots.map((area)=>this._renderAreaGroup(area,config,false,"combined")).join("")}</div></div>${thermalRoute}</section>`;
   }
 
@@ -1359,12 +1361,22 @@ class EnergySystemDashboardPanel extends HTMLElement {
     if (!levels.length) return this._empty("Noch keine konfigurierten Gebäudeebenen vorhanden.");
     const electricFlags=levels.map((level)=>this._levelPower(level,config)!==null || this._levelTodayEnergy(level,config)!==null);
     const thermalFlags=levels.map((level)=>this._levelThermalPower(level,config)!==null || this._levelThermalTodayEnergy(level,config)!==null || this._levelSupplyTemperature(level,config)!==null || this._levelReturnTemperature(level,config)!==null);
+    const electricFlow=levels.map((level)=>{ const value=this._levelPower(level,config); return value!==null && value>=0.5; });
+    const thermalFlow=levels.map((level)=>{ const value=this._levelThermalPower(level,config); return value!==null && value>=0.5; });
     const firstElectric=electricFlags.indexOf(true), lastElectric=electricFlags.lastIndexOf(true), firstThermal=thermalFlags.indexOf(true), lastThermal=thermalFlags.lastIndexOf(true);
+    // Elektrik fließt von oben nach unten: ein vertikales Segment ist animiert,
+    // wenn in diesem oder einem tiefer liegenden angebundenen Geschoss Last fließt.
+    const electricRailFlow=levels.map((_,index)=>electricFlow.slice(index,lastElectric+1).some(Boolean));
+    // Thermik fließt von unten nach oben: ein vertikales Segment ist animiert,
+    // wenn in diesem oder einem höher liegenden angebundenen Geschoss Wärme fließt.
+    const thermalRailFlow=levels.map((_,index)=>thermalFlow.slice(firstThermal, index+1).some(Boolean));
     const rows=levels.map((level,index)=>this._renderCombinedFloorGroup(level,config,{
       electricRail:firstElectric>=0 && index>=firstElectric && index<=lastElectric,
-      electricBranch:electricFlags[index], electricFirst:index===firstElectric, electricLast:index===lastElectric,
+      electricRailActive:electricRailFlow[index],
+      electricBranch:electricFlags[index], electricBranchActive:electricFlow[index], electricFirst:index===firstElectric, electricLast:index===lastElectric,
       thermalRail:firstThermal>=0 && index>=firstThermal && index<=lastThermal,
-      thermalBranch:thermalFlags[index], thermalFirst:index===firstThermal, thermalLast:index===lastThermal,
+      thermalRailActive:thermalRailFlow[index],
+      thermalBranch:thermalFlags[index], thermalBranchActive:thermalFlow[index], thermalFirst:index===firstThermal, thermalLast:index===lastThermal,
     })).join("");
     return `<div class="combined-building" style="--flow-phase:${this._flowPhase(1.8)}">${rows}</div>`;
   }
