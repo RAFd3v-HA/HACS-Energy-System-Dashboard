@@ -1,0 +1,19 @@
+{
+  "domain": "energy_system_dashboard",
+  "name": "Energy System Dashboard",
+  "version": "0.7.3",
+  "config_flow": true,
+  "single_config_entry": true,
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "dependencies": [
+    "frontend",
+    "http",
+    "websocket_api",
+    "recorder"
+  ],
+  "requirements": [],
+  "codeowners": [
+    "@RAFd3v-HA"
+  ]
+}
