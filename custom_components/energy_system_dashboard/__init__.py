@@ -527,6 +527,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "climate_mode": "climate" if str(area.get("climate_mode") or "") == "climate" else ("entities" if str(area.get("climate_mode") or "") == "entities" else ""),
                 "climate_entity": str(area.get("climate_entity") or ""),
                 "current_temperature_entity": str(area.get("current_temperature_entity") or ""),
+                "current_temperature_entities": [str(entity_id) for entity_id in (area.get("current_temperature_entities") or []) if str(entity_id)],
                 "target_temperature_entity": str(area.get("target_temperature_entity") or ""),
                 **source_values,
                 "calculation_type": calculation_type,
