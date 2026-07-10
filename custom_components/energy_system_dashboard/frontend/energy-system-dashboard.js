@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.7.0";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.7.1";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -126,8 +126,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
       this._loaded = true;
       this._syncLayoutState();
       this._selectedCalculationId = this._config?.calculations?.[0]?.id || null;
-      await this._subscribeCalculations();
       this._render();
+      void this._subscribeCalculations();
       await this._refreshDailyEnergy();
     } catch (error) {
       this._renderError(`Konfiguration konnte nicht geladen werden: ${error?.message || error}`);

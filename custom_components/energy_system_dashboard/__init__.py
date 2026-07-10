@@ -138,7 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.6.1",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.7.1",
                 }
             },
             require_admin=False,
@@ -217,6 +217,7 @@ async def websocket_subscribe_calculations(
         connection.send_event(msg["id"], manager.snapshot())
 
     connection.subscriptions[msg["id"]] = manager.async_add_value_listener(send_snapshot)
+    connection.send_result(msg["id"])
     send_snapshot()
 
 
