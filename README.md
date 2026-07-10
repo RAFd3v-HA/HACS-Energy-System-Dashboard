@@ -1,8 +1,14 @@
-# Energy System Dashboard 0.4.1
+# Energy System Dashboard 0.4.2
+
+## V0.4.2 – Mobile / Responsive Layout
+
+Bis 640 px nutzt das Panel eine eigene mobile Darstellung. Das Desktop-Einlinienschema bleibt unverändert. Stockwerke werden mobil als vertikaler Stack mit horizontalem Stockwerkskopf gerendert; Parent/Child-Hierarchien bleiben verschachtelt. Modulfelder laufen einspaltig, Navigation bleibt horizontal scrollbar und Formulare erhalten größere Touch-Ziele. Der magnetische 12-Spalten-Editor bleibt technisch maßstabsstabil und wird auf kleinen Displays horizontal scrollbar.
+
+Siehe auch `MOBILE.md`.
 
 Technisches, modulares Energie- und Heizungsdashboard für Home Assistant.
 
-## V0.4.1 – Quellen-Dropdown im Berechnungseditor
+## V0.4.2 – Quellen-Dropdown im Berechnungseditor
 
 - Live-Updates von Home Assistant ersetzen ein gerade aktives Dropdown oder Eingabefeld im Reiter **BERECHNUNGEN** nicht mehr.
 - Solange ein Berechnungsfeld fokussiert ist, wird ein Live-Neurendering zurückgestellt.
@@ -179,7 +185,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.4.1
+/energy_system_dashboard/energy-system-card.js?v=0.4.2
 ```
 
 Home Assistant:
@@ -189,7 +195,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.4.1
+URL: /energy_system_dashboard/energy-system-card.js?v=0.4.2
 Typ: JavaScript-Modul
 ```
 
@@ -198,7 +204,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.1
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.4.2
       type: module
 ```
 
