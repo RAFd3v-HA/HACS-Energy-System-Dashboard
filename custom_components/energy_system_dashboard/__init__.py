@@ -35,7 +35,7 @@ from .const import (
 DEFAULT_LEVEL_ID = "level_0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "version": 12,
+    "version": 13,
     "name": "ENERGY SYSTEM",
     "grid": {
         "enabled": False,
@@ -138,7 +138,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "name": PANEL_ELEMENT,
                     "embed_iframe": False,
                     "trust_external": False,
-                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.4.4",
+                    "js_url": f"{STATIC_URL}/energy-system-dashboard.js?v=0.5.0",
                 }
             },
             require_admin=False,
@@ -290,7 +290,7 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored config and reject invalid calculation cycles."""
     normalized = dict(DEFAULT_CONFIG)
     normalized.update(config if isinstance(config, dict) else {})
-    normalized["version"] = 12
+    normalized["version"] = 13
 
     for key in ("generation", "storage", "heating", "calculations", "areas", "levels"):
         if not isinstance(normalized.get(key), list):
@@ -338,8 +338,13 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
             "soc_entity",
             "charge_energy_entity",
             "discharge_energy_entity",
+            "capacity_entity",
         ):
             module[key] = str(module.get(key) or "")
+        try:
+            module["capacity_kwh"] = max(0.0, float(module.get("capacity_kwh") or 0))
+        except (TypeError, ValueError):
+            module["capacity_kwh"] = 0.0
         storage.append(module)
     normalized["storage"] = storage
 
@@ -517,6 +522,12 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
                 "energy_entity": str(area.get("energy_entity") or ""),
                 "thermal_power_entity": str(area.get("thermal_power_entity") or ""),
                 "thermal_energy_entity": str(area.get("thermal_energy_entity") or ""),
+                "supply_temperature_entity": str(area.get("supply_temperature_entity") or ""),
+                "return_temperature_entity": str(area.get("return_temperature_entity") or ""),
+                "climate_mode": "climate" if str(area.get("climate_mode") or "") == "climate" else ("entities" if str(area.get("climate_mode") or "") == "entities" else ""),
+                "climate_entity": str(area.get("climate_entity") or ""),
+                "current_temperature_entity": str(area.get("current_temperature_entity") or ""),
+                "target_temperature_entity": str(area.get("target_temperature_entity") or ""),
                 **source_values,
                 "calculation_type": calculation_type,
                 "basis_area_id": basis_area_id,

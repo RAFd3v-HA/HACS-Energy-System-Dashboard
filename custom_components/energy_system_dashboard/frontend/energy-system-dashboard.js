@@ -1,4 +1,4 @@
-const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.4.4";
+const ENERGY_SYSTEM_DASHBOARD_VERSION = "0.5.0";
 
 class EnergySystemDashboardPanel extends HTMLElement {
   constructor() {
@@ -353,6 +353,108 @@ class EnergySystemDashboardPanel extends HTMLElement {
     return `${value.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} °C`;
   }
 
+  _capacityKWh(entityId) {
+    return this._energyStateKWh(entityId);
+  }
+
+  _areaClimate(area, config = this._config) {
+    if (!area) return { current: null, target: null };
+    if (area.climate_mode === "climate" && area.climate_entity) {
+      const state = this._state(area.climate_entity);
+      if (!state || ["unknown", "unavailable", "none", ""].includes(String(state.state).toLowerCase())) return { current: null, target: null };
+      const current = Number(state.attributes?.current_temperature);
+      const target = Number(state.attributes?.temperature);
+      return { current: Number.isFinite(current) ? current : null, target: Number.isFinite(target) ? target : null };
+    }
+    if (area.climate_mode === "entities") {
+      return { current: this._temperature(area.current_temperature_entity), target: this._temperature(area.target_temperature_entity) };
+    }
+    return { current: null, target: null };
+  }
+
+  _branchClimateCurrent(area, config = this._config, stack = new Set()) {
+    if (!area || stack.has(area.id)) return [];
+    const next = new Set(stack); next.add(area.id);
+    const own = this._areaClimate(area, config).current;
+    const values = own === null ? [] : [own];
+    for (const child of this._sameLevelChildren(area.id, area.level_id, config)) values.push(...this._branchClimateCurrent(child, config, next));
+    return values;
+  }
+
+  _areaAverageRoomTemperature(area, config = this._config) {
+    const values = this._branchClimateCurrent(area, config).filter(Number.isFinite);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  _levelTemperatureValues(level, field, config = this._config) {
+    if (!level) return [];
+    return (config?.areas || []).filter((area) => area.id !== "house" && area.level_id === level.id && area[field])
+      .map((area) => this._temperature(area[field])).filter((value) => value !== null && Number.isFinite(value));
+  }
+
+  _levelSupplyTemperature(level, config = this._config) {
+    const values = this._levelTemperatureValues(level, "supply_temperature_entity", config);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  _levelReturnTemperature(level, config = this._config) {
+    const values = this._levelTemperatureValues(level, "return_temperature_entity", config);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  _levelAverageRoomTemperature(level, config = this._config) {
+    if (!level) return null;
+    const values = this._visualRootAreas(level.id, config).flatMap((area) => this._branchClimateCurrent(area, config)).filter(Number.isFinite);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  _isReducedGeneration(module) {
+    const reductionRaw = String(this._state(module?.reduction_entity)?.state || "").toLowerCase();
+    const reducedStates = String(module?.reduction_active_states || "on,true,1,active,reduced,begrenzt")
+      .split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+    return Boolean(module?.reduction_entity && reducedStates.includes(reductionRaw));
+  }
+
+  _renderSourceSummary(kind, modules) {
+    const rows = modules.map((module) => {
+      const power = this._powerW(module.power_entity);
+      const today = this._dailyEnergyKWh(module.energy_entity);
+      const reduced = kind === "solar" && this._isReducedGeneration(module);
+      return `<div class="source-summary-row ${reduced ? "reduced" : ""}"><span>${this._esc(module.name || (kind === "solar" ? "PV Quelle" : "Erzeuger"))}</span><strong>${this._formatPowerW(power)}</strong><small class="daily-value">${this._formatEnergyKWh(today)}</small></div>`;
+    }).join("");
+    return `<div class="source-summary">${rows}</div>`;
+  }
+
+  _renderGenerationGroup(modules) {
+    if (!modules.length) return "";
+    const powerValues = modules.map((module) => this._powerW(module.power_entity)).filter((value) => value !== null);
+    const totalPower = powerValues.length ? powerValues.reduce((sum, value) => sum + value, 0) : null;
+    const totalTodayValues = modules.map((module) => this._dailyEnergyKWh(module.energy_entity)).filter((value) => value !== null);
+    const totalToday = totalTodayValues.length ? totalTodayValues.reduce((sum, value) => sum + value, 0) : null;
+    const reduced = modules.some((module) => this._isReducedGeneration(module));
+    const active = totalPower !== null && totalPower > 10;
+    return this._node({ code:"PV", name:"PV / Solar", main:this._formatPowerW(totalPower), state:active ? (reduced ? "PRODUCTION / REDUCED" : "PRODUCTION") : totalPower === null ? "UNKNOWN" : "IDLE", status:totalPower === null ? "unknown" : active ? (reduced ? "reduced" : "good") : "idle", custom:`<div class="mini-line daily-value"><span>GESAMT HEUTE</span><strong>${this._formatEnergyKWh(totalToday)}</strong></div>${this._renderSourceSummary("solar", modules)}`, metaLeft:`${modules.length} QUELLE${modules.length === 1 ? "" : "N"}`, metaRight:"GENERATION" });
+  }
+
+  _renderBatteryGroup(modules) {
+    if (!modules.length) return "";
+    const powers = modules.map((module) => this._powerW(module.power_entity)).filter((value) => value !== null);
+    const totalPower = powers.length ? powers.reduce((sum, value) => sum + value, 0) : null;
+    const capacities = modules.map((module) => this._capacityKWh(module.capacity_entity) ?? (Number(module.capacity_kwh) > 0 ? Number(module.capacity_kwh) : null));
+    const validCaps = capacities.filter((value) => value !== null && value > 0);
+    const totalCapacity = validCaps.length ? validCaps.reduce((sum, value) => sum + value, 0) : null;
+    const socPairs = modules.map((module, index) => ({ soc:this._numeric(module.soc_entity), cap:capacities[index] })).filter((item) => item.soc !== null);
+    const weighted = socPairs.filter((item) => item.cap !== null && item.cap > 0);
+    let totalSoc = null;
+    if (weighted.length) totalSoc = weighted.reduce((sum, item) => sum + item.soc * item.cap, 0) / weighted.reduce((sum, item) => sum + item.cap, 0);
+    else if (socPairs.length) totalSoc = socPairs.reduce((sum, item) => sum + item.soc, 0) / socPairs.length;
+    const chargeTodayValues = modules.map((module) => this._dailyEnergyKWh(module.charge_energy_entity)).filter((value) => value !== null);
+    const dischargeTodayValues = modules.map((module) => this._dailyEnergyKWh(module.discharge_energy_entity)).filter((value) => value !== null);
+    const state = totalPower === null ? "UNKNOWN" : totalPower > 10 ? "CHARGE" : totalPower < -10 ? "DISCHARGE" : "IDLE";
+    const rows = modules.map((module, index) => `<div class="source-summary-row"><span>${this._esc(module.name || `Teilspeicher ${index + 1}`)}</span><strong>${this._numeric(module.soc_entity) === null ? this._formatPowerW(this._powerW(module.power_entity), true) : `${this._numeric(module.soc_entity).toLocaleString("de-DE", { maximumFractionDigits:1 })} %`}</strong><small>${capacities[index] === null ? "—" : `${capacities[index].toLocaleString("de-DE", { maximumFractionDigits:2 })} kWh`}</small></div>`).join("");
+    return this._node({ code:"BAT", name:"Batteriespeicher", main:totalSoc === null ? this._formatPowerW(totalPower, true) : `${totalSoc.toLocaleString("de-DE", { maximumFractionDigits:1 })} %`, state, status:totalPower === null ? "unknown" : Math.abs(totalPower) > 10 ? "active" : "idle", custom:`${totalCapacity === null ? "" : `<div class="mini-line"><span>GESAMTKAPAZITÄT</span><strong>${totalCapacity.toLocaleString("de-DE", { maximumFractionDigits:2 })} kWh</strong></div>`}<div class="mini-line daily-value"><span>LADEN HEUTE</span><strong>${this._formatEnergyKWh(chargeTodayValues.length ? chargeTodayValues.reduce((sum, value) => sum + value, 0) : null)}</strong></div><div class="mini-line daily-value"><span>ENTLADEN HEUTE</span><strong>${this._formatEnergyKWh(dischargeTodayValues.length ? dischargeTodayValues.reduce((sum, value) => sum + value, 0) : null)}</strong></div><div class="source-summary">${rows}</div>`, metaLeft:this._formatPowerW(totalPower, true), metaRight:`${modules.length} TEILSPEICHER` });
+  }
+
   _displayState(entityId) {
     const state = this._state(entityId);
     if (!state) return "—";
@@ -378,6 +480,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         if (kind === "temperature") return deviceClass === "temperature" || ["°c", "°f", "c", "f"].includes(unit);
         if (kind === "percentage") return unit === "%" || deviceClass === "battery";
         if (kind === "binary") return domain === "binary_sensor" || domain === "switch";
+        if (kind === "climate") return domain === "climate";
         return true;
       })
       .sort((a, b) => this._friendly(a.entity_id).localeCompare(this._friendly(b.entity_id), "de"));
@@ -1214,91 +1317,34 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const config = this._config;
     const gridFlow = this._gridFlow();
     const nodes = [];
-    if (this._isConfiguredGrid(config)) {
-      nodes.push(this._node({
-        code: "GRID",
-        name: config.grid.name || "Netz",
-        main: this._formatPowerW(gridFlow.power),
-        state: gridFlow.label,
-        status: gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good",
-        custom: `<div class="mini-line daily-value"><span>BEZUG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.import_energy_entity))}</strong></div><div class="mini-line daily-value"><span>EINSPEISUNG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.export_energy_entity))}</strong></div>`,
-        metaLeft: "REFERENCE",
-        metaRight: config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +",
-      }));
-    }
-    for (const module of (config.generation || []).filter((item) => this._isConfiguredGeneration(item))) {
-      const power = this._powerW(module.power_entity);
-      const reductionRaw = String(this._state(module.reduction_entity)?.state || "").toLowerCase();
-      const reducedStates = String(module.reduction_active_states || "on,true,1,active,reduced,begrenzt")
-        .split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
-      const reduced = Boolean(module.reduction_entity && reducedStates.includes(reductionRaw));
-      nodes.push(this._node({
-        code: module.type === "solar" ? "PV" : "GEN",
-        name: module.name || "Erzeuger",
-        main: this._formatPowerW(power),
-        state: power !== null && power > 10 ? (reduced ? "PRODUCTION / REDUCED" : "PRODUCTION") : power === null ? "UNKNOWN" : "IDLE",
-        status: power === null ? "unknown" : power > 10 ? (reduced ? "reduced" : "good") : "idle",
-        custom: module.energy_entity ? `<div class="mini-line daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity))}</strong></div>` : "",
-        metaLeft: "SOURCE",
-        metaRight: module.power_entity ? this._friendly(module.power_entity) : "NO ENTITY",
-      }));
-    }
-    for (const module of (config.storage || []).filter((item) => this._isConfiguredStorage(item))) {
-      const power = this._powerW(module.power_entity);
-      const soc = this._numeric(module.soc_entity);
-      const state = power === null ? "UNKNOWN" : power > 10 ? "CHARGE" : power < -10 ? "DISCHARGE" : "IDLE";
-      nodes.push(this._node({
-        code: "BAT",
-        name: module.name || "Batterie",
-        main: soc === null ? this._formatPowerW(power, true) : `${soc.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`,
-        state,
-        status: power === null ? "unknown" : Math.abs(power) > 10 ? "active" : "idle",
-        custom: `<div class="mini-line daily-value"><span>LADEN HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.charge_energy_entity))}</strong></div><div class="mini-line daily-value"><span>ENTLADEN HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.discharge_energy_entity))}</strong></div>`,
-        metaLeft: this._formatPowerW(power, true),
-        metaRight: "STORAGE",
-      }));
-    }
+    if (this._isConfiguredGrid(config)) nodes.push(this._node({ code:"GRID", name:config.grid.name || "Netz", main:this._formatPowerW(gridFlow.power), state:gridFlow.label, status:gridFlow.mode === "unknown" ? "unknown" : gridFlow.mode === "import" ? "active" : "good", custom:`<div class="mini-line daily-value"><span>BEZUG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.import_energy_entity))}</strong></div><div class="mini-line daily-value"><span>EINSPEISUNG HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(config.grid.export_energy_entity))}</strong></div>`, metaLeft:"REFERENCE", metaRight:config.grid.direction === "export_positive" ? "EXPORT +" : "IMPORT +" }));
+    const solar = (config.generation || []).filter((item) => item.type === "solar" && this._isConfiguredGeneration(item));
+    const other = (config.generation || []).filter((item) => item.type !== "solar" && this._isConfiguredGeneration(item));
+    const pvNode = this._renderGenerationGroup(solar); if (pvNode) nodes.push(pvNode);
+    for (const module of other) { const power=this._powerW(module.power_entity); nodes.push(this._node({ code:"GEN", name:module.name || "Erzeuger", main:this._formatPowerW(power), state:power !== null && power > 10 ? "PRODUCTION" : power === null ? "UNKNOWN" : "IDLE", status:power === null ? "unknown" : power > 10 ? "good" : "idle", custom:module.energy_entity ? `<div class="mini-line daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(this._dailyEnergyKWh(module.energy_entity))}</strong></div>` : "", metaLeft:"SOURCE", metaRight:"GENERATION" })); }
+    const batteryNode = this._renderBatteryGroup((config.storage || []).filter((item) => this._isConfiguredStorage(item))); if (batteryNode) nodes.push(batteryNode);
     return nodes;
   }
 
-  _renderSystem() {
-    const config = this._config;
-    this._syncLayoutState(config);
-    const electrical = this._electricalNodes();
-    const configuredHeating = (config.heating || []).filter((module) => this._isConfiguredHeating(module));
-    const conversions = configuredHeating.filter((module) => module.power_entity).map((module) => this._renderHeatingNode(module, "electric"));
-    const buffer = config.buffer || {};
-    const bufferVisible = this._isConfiguredBuffer(buffer);
-    const thermalSources = bufferVisible ? configuredHeating.filter((module) => module.target === "buffer").map((module) => this._renderHeatingNode(module, "thermal")) : [];
-    const roomSources = configuredHeating.filter((module) => module.target !== "buffer" || !bufferVisible).map((module) => this._renderHeatingNode(module, "thermal"));
-    const electricLevels = this._overviewLevels(config, "electric");
-    const thermalLevels = this._overviewLevels(config, "thermal");
-    const sections = [];
-
-    if (electrical.length || electricLevels.length) {
-      sections.push(`<section class="system-zone electrical-zone">
-        <div class="section-label split-label"><span>01 / ELEKTRISCH</span><strong>${this._housePowerLabel()}</strong></div>
-        ${electrical.length ? `<div class="system-grid module-board">${this._gridCells(electrical)}</div>${this._flowWire("electric")}` : ""}
-        ${electricLevels.length ? `<div class="bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div>${this._renderBuildingStack(config, null, false, "electric")}` : ""}
-      </section>`);
-    }
-
-    if (conversions.length) {
-      sections.push(`<div class="conversion-band"><span>02 / ENERGIEWANDLUNG</span><strong>ELEKTRISCH → WÄRME</strong></div><div class="system-grid module-board conversion-board">${this._gridCells(conversions)}</div>`);
-    }
-
-    if (thermalSources.length || roomSources.length || this._isConfiguredBuffer(buffer) || thermalLevels.length) {
-      sections.push(`<section class="system-zone thermal-zone">
-        <div class="section-label split-label"><span>03 / THERMISCH</span><strong>${this._thermalLoadLabel()}</strong></div>
-        ${thermalSources.length && bufferVisible ? `<div class="system-grid module-board thermal-board">${this._gridCells(thermalSources)}</div>${this._flowWire("thermal", 28)}` : ""}
-        ${bufferVisible ? `<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div>` : ""}
-        ${thermalLevels.length ? `${bufferVisible ? this._flowWire("thermal", 28) : ""}<div class="distribution-box thermal-distribution"><span>THERMISCHE VERTEILUNG</span><strong>${this._thermalLoadLabel()}</strong></div>${this._renderBuildingStack(config, null, false, "thermal")}` : ""}
-        ${roomSources.length ? `<div class="section-label room-label">DIREKTE RAUMWÄRME / SONSTIGE WÄRMESENKEN</div><div class="system-grid module-board thermal-board">${this._gridCells(roomSources)}</div>` : ""}
-      </section>`);
-    }
-
-    return `<div class="system-note">GESAMTSYSTEM · ELEKTRISCHE UND THERMISCHE LASTEN JE STOCKWERK</div>${sections.join("") || this._empty("Noch kein Systemmodul konfiguriert.")}`;
+  _renderCombinedFloorGroup(level, config = this._config) {
+    const roots = this._visualRootAreas(level.id, config).filter((area) => this._branchHasConfig(area, "electric", config) || this._branchHasConfig(area, "thermal", config) || this._branchClimateCurrent(area, config).length);
+    if (!roots.length) return "";
+    const electricPower=this._levelPower(level,config), electricToday=this._levelTodayEnergy(level,config), thermalPower=this._levelThermalPower(level,config), thermalToday=this._levelThermalTodayEnergy(level,config), supply=this._levelSupplyTemperature(level,config), ret=this._levelReturnTemperature(level,config), room=this._levelAverageRoomTemperature(level,config);
+    const delta=supply !== null && ret !== null ? supply-ret : null;
+    return `<section class="combined-floor-group"><div class="combined-electric-port"><span>${this._formatPowerW(electricPower)}</span><small class="daily-value">HEUTE ${this._formatEnergyKWh(electricToday)}</small></div><aside class="combined-floor-indicator"><strong>${this._esc(level.name)}</strong>${room === null ? "" : `<span>Ø RAUM ${this._formatTemp(room)}</span>`}</aside><div class="combined-floor-content">${roots.map((area)=>this._renderAreaGroup(area,config,false,"combined")).join("")}</div><div class="combined-thermal-port">${supply === null ? "" : `<span>VL ${this._formatTemp(supply)}</span>`}${ret === null ? "" : `<small>RL ${this._formatTemp(ret)}</small>`}${delta === null ? "" : `<em>ΔT ${delta.toLocaleString("de-DE",{maximumFractionDigits:1})} K</em>`}${thermalPower === null ? "" : `<strong>${this._formatPowerW(thermalPower)}</strong>`}${thermalToday === null ? "" : `<small class="daily-value">HEUTE ${this._formatEnergyKWh(thermalToday)}</small>`}</div></section>`;
   }
+
+  _renderCombinedBuilding(config = this._config) {
+    const levels=this._buildingLevels(config).filter((level)=>this._visualRootAreas(level.id,config).some((area)=>this._branchHasConfig(area,"electric",config)||this._branchHasConfig(area,"thermal",config)||this._branchClimateCurrent(area,config).length));
+    return levels.length ? `<div class="combined-building">${levels.map((level)=>this._renderCombinedFloorGroup(level,config)).join("")}</div>` : this._empty("Noch keine konfigurierten Gebäudeebenen vorhanden.");
+  }
+
+  _renderSystem() {
+    const config=this._config; this._syncLayoutState(config);
+    const electrical=this._electricalNodes(), heating=(config.heating||[]).filter((module)=>this._isConfiguredHeating(module)), buffer=config.buffer||{}, bufferVisible=this._isConfiguredBuffer(buffer), toBuffer=bufferVisible ? heating.filter((module)=>module.target === "buffer") : [], directRoom=heating.filter((module)=>module.target !== "buffer" || !bufferVisible);
+    return `<div class="system-note">GESAMTSYSTEM · ELEKTRISCHER FLOW VON OBEN · THERMISCHER FLOW VON UNTEN</div><section class="combined-system-zone"><div class="combined-energy-side electric-side"><div class="section-label split-label"><span>01 / ELEKTRISCH</span><strong>${this._housePowerLabel()}</strong></div>${electrical.length ? `<div class="system-grid module-board">${this._gridCells(electrical)}</div>${this._flowWire("electric",24)}` : ""}<div class="bus closed-bus"><span>ELEKTRISCHE VERTEILUNG</span><strong>${this._housePowerLabel()}</strong></div></div><div class="combined-flow-arrow electric-down"><i></i><span>ELEKTRISCH</span></div>${this._renderCombinedBuilding(config)}<div class="combined-flow-arrow thermal-up"><i></i><span>THERMISCH</span></div><div class="combined-energy-side thermal-side"><div class="distribution-box thermal-distribution closed-distribution"><span>THERMISCHE VERTEILUNG</span><strong>${this._thermalLoadLabel()}</strong></div>${bufferVisible ? `${this._flowWire("thermal",24)}<div class="system-grid module-board buffer-board"><div class="system-cell full-span">${this._renderBuffer(buffer)}</div></div>` : ""}${toBuffer.length && bufferVisible ? `${this._flowWire("thermal",24)}<div class="system-grid module-board thermal-board">${this._gridCells(toBuffer.map((module)=>this._renderHeatingNode(module,"thermal")))}</div>` : ""}${directRoom.length ? `<div class="section-label room-label">DIREKTE RAUMWÄRME / SONSTIGE WÄRMESENKEN</div><div class="system-grid module-board thermal-board">${this._gridCells(directRoom.map((module)=>this._renderHeatingNode(module,"thermal")))}</div>` : ""}</div></section>`;
+  }
+
   _renderElectric() {
     const config = this._config;
     this._syncLayoutState(config);
@@ -1533,7 +1579,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
     const groupClass = children.length ? `has-children ${expanded ? "is-expanded" : "is-collapsed"}` : "leaf-group";
     const position = nested
       ? `style="--root-tile-height:${Math.max(42, Number(tileLayout.h || 1) * 42)}px"`
-      : `style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)};--root-tile-height:${Math.max(42, Number(tileLayout.h || 1) * 42)}px"`;
+      : `style="grid-column:${Number(layout.x || 1)} / span ${Number(layout.w || 3)};grid-row:${Number(layout.y || 1)} / span ${Number(layout.h || 2)};--area-span:${Number(layout.w || 3)};--root-tile-height:${Math.max(42, Number(tileLayout.h || 1) * 42)}px"`;
     return `<div class="area-group ${nested ? "nested-area-group" : "root-area-group"} ${groupClass} depth-${Math.min(depth, 3)}" data-area-group="${this._esc(area.id)}" ${position}>
       ${this._renderAreaTile(area, config, interactive, kind, depth)}
       ${children.length && expanded ? `<div class="area-child-grid" data-child-drop-parent="${this._esc(area.id)}">${children.map((child, index) => `<div class="area-child-branch ${index === children.length - 1 ? "last-child-branch" : ""}" data-child-branch="${this._esc(child.id)}">${this._renderAreaGroup(child, config, interactive, kind, depth + 1, true)}</div>`).join("")}</div>` : ""}
@@ -1541,26 +1587,17 @@ class EnergySystemDashboardPanel extends HTMLElement {
   }
 
   _renderAreaTile(area, config = this._config, interactive = false, kind = "electric", depth = 0) {
-    const power = kind === "thermal" ? this._areaThermalPower(area, config) : this._areaPower(area, config);
-    const today = kind === "thermal" ? this._areaThermalTodayEnergy(area, config) : this._areaTodayEnergy(area, config);
-    const selected = interactive && area.id === this._selectedAreaId;
-    const tag = interactive ? "button" : "article";
-    const children = this._sameLevelChildren(area.id, area.level_id, config);
-    const attrs = interactive ? `type="button" draggable="true" data-drag-area="${this._esc(area.id)}" data-action="select-area" data-area-id="${this._esc(area.id)}"` : children.length ? `data-action="toggle-parent" data-area-id="${this._esc(area.id)}" role="button" tabindex="0"` : "";
-    const parent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, config) : null;
-    const hierarchyClass = children.length ? " hierarchy-parent" : parent ? ` hierarchy-child hierarchy-depth-${Math.min(depth, 3)}` : " hierarchy-root";
-    const relation = children.length
-      ? `<div class="area-hierarchy-meta"><span>PARENT</span><strong>${children.length} UNTERBEREICH${children.length === 1 ? "" : "E"} ${interactive ? "" : this._parentExpanded(area.id, interactive) ? "▾" : "▸"}</strong></div>`
-      : parent ? `<div class="area-parent-ref">↳ ${this._esc(parent.name)}</div>` : "";
-    const formulaKind = kind === "thermal" ? "thermal_power" : "power";
-    return `<${tag} class="area-tile ${kind === "thermal" ? "thermal-area" : "electric-area"} ${this._areaUsesCalculation(area) ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs}>
-      <div class="area-tile-head"><span>${this._areaUsesCalculation(area) ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>
-      ${relation}
-      <div class="area-tile-power">${this._formatPowerW(power)}</div>
-      <div class="area-tile-energy daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>
-      <div class="area-tile-formula">${this._esc(this._areaFormula(area, config, formulaKind))}</div>
-    </${tag}>`;
+    const isCombined=kind === "combined", power=kind === "thermal" ? this._areaThermalPower(area,config) : this._areaPower(area,config), today=kind === "thermal" ? this._areaThermalTodayEnergy(area,config) : this._areaTodayEnergy(area,config), thermalPower=this._areaThermalPower(area,config), thermalToday=this._areaThermalTodayEnergy(area,config), selected=interactive && area.id === this._selectedAreaId, tag=interactive ? "button" : "article", children=this._sameLevelChildren(area.id,area.level_id,config);
+    const attrs=interactive ? `type="button" draggable="true" data-drag-area="${this._esc(area.id)}" data-action="select-area" data-area-id="${this._esc(area.id)}"` : children.length ? `data-action="toggle-parent" data-area-id="${this._esc(area.id)}" role="button" tabindex="0"` : "";
+    const parent=area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id,config) : null, hierarchyClass=children.length ? " hierarchy-parent" : parent ? ` hierarchy-child hierarchy-depth-${Math.min(depth,3)}` : " hierarchy-root";
+    const relation=children.length ? `<div class="area-hierarchy-meta"><span>PARENT</span><strong>${children.length} UNTERBEREICH${children.length === 1 ? "" : "E"} ${interactive ? "" : this._parentExpanded(area.id,interactive) ? "▾" : "▸"}</strong></div>` : parent ? `<div class="area-parent-ref">↳ ${this._esc(parent.name)}</div>` : "";
+    const climate=this._areaClimate(area,config), averageRoom=children.length ? this._areaAverageRoomTemperature(area,config) : null;
+    const roomHtml=children.length && averageRoom !== null ? `<div class="area-climate parent-climate"><span>Ø RAUM</span><strong>${this._formatTemp(averageRoom)}</strong></div>` : !children.length && (climate.current !== null || climate.target !== null) ? `<div class="area-climate child-climate">${climate.current === null ? "" : `<span>IST <strong>${this._formatTemp(climate.current)}</strong></span>`}${climate.target === null ? "" : `<span>SOLL <strong>${this._formatTemp(climate.target)}</strong></span>`}</div>` : "";
+    const thermalHtml=isCombined && (thermalPower !== null || thermalToday !== null) ? `<div class="area-thermal-summary">${thermalPower === null ? "" : `<span>TH. <strong>${this._formatPowerW(thermalPower)}</strong></span>`}${thermalToday === null ? "" : `<span class="daily-value">TH. HEUTE <strong>${this._formatEnergyKWh(thermalToday)}</strong></span>`}</div>` : "";
+    const formulaKind=kind === "thermal" ? "thermal_power" : "power";
+    return `<${tag} class="area-tile ${kind === "thermal" ? "thermal-area" : isCombined ? "combined-area" : "electric-area"} ${this._areaUsesCalculation(area) ? "calculated" : "measured"} layout-${this._layoutMode(area)}${hierarchyClass} ${selected ? "selected" : ""}" ${attrs}><div class="area-tile-head"><span>${this._areaUsesCalculation(area) ? "C" : "M"}</span><strong>${this._esc(area.name)}</strong></div>${relation}<div class="area-tile-power">${this._formatPowerW(power)}</div><div class="area-tile-energy daily-value"><span>HEUTE</span><strong>${this._formatEnergyKWh(today)}</strong></div>${roomHtml}${thermalHtml}${isCombined ? "" : `<div class="area-tile-formula">${this._esc(this._areaFormula(area,config,formulaKind))}</div>`}</${tag}>`;
   }
+
   _formatKindValue(kind, value) {
     return this._kindMeta(kind).energy ? this._formatEnergyKWh(value) : this._formatPowerW(value);
   }
@@ -1695,6 +1732,8 @@ class EnergySystemDashboardPanel extends HTMLElement {
             ${this._field("Ladezustand", `<select data-array="storage" data-index="${index}" data-field="soc_entity">${this._entityOptions("percentage", module.soc_entity)}</select>`)}
             ${this._field("Geladene Energie / kWh", `<select data-array="storage" data-index="${index}" data-field="charge_energy_entity">${this._entityOptions("energy", module.charge_energy_entity)}</select>`)}
             ${this._field("Entladene Energie / kWh", `<select data-array="storage" data-index="${index}" data-field="discharge_energy_entity">${this._entityOptions("energy", module.discharge_energy_entity)}</select>`)}
+            ${this._field("Kapazitäts-Entity", `<select data-array="storage" data-index="${index}" data-field="capacity_entity">${this._entityOptions("energy", module.capacity_entity)}</select>`)}
+            ${this._field("Kapazität manuell / kWh", `<input type="number" min="0" step="0.1" data-array="storage" data-index="${index}" data-field="capacity_kwh" value="${Number(module.capacity_kwh || 0)}">`)}
           </div>`).join("") || `<div class="config-empty">KEINE BATTERIESPEICHER</div>`}
       </section>`;
   }
@@ -1819,7 +1858,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       ${!isHouse ? (() => { const hierarchyParent = area.parent_id && area.parent_id !== "house" ? this._areaById(area.parent_id, d) : null; return hierarchyParent ? `<div class="root-note child-floor-note">STOCKWERK WIRD VOM PARENT <strong>${this._esc(hierarchyParent.name)}</strong> ÜBERNOMMEN · ${this._esc(this._levelById(hierarchyParent.level_id, d)?.name || "—")}</div>` : this._field("Stockwerk", `<select data-area-id="${this._esc(area.id)}" data-area-field="level_id">${levelOptions}</select><div class="custom-floor-add"><input data-custom-floor-name="${this._esc(area.id)}" placeholder="Eigenes Stockwerk, z. B. Galerie"><button type="button" data-action="assign-custom-floor" data-area-id="${this._esc(area.id)}">HINZUFÜGEN</button></div>`); })() : `<div class="root-note">HAUS IST STOCKWERKÜBERGREIFEND UND IMMER ÜBER DIE VOLLE BREITE ANGEORDNET.</div>`}
       ${this._renderHierarchyEditor(area, d)}
       <div class="inspector-section source-section"><div class="inspector-label">MESSWERTQUELLEN</div>${this._renderAreaMeasurementSource(area, "power", d)}${this._renderAreaMeasurementSource(area, "energy", d)}${this._renderAreaMeasurementSource(area, "thermal_power", d)}${this._renderAreaMeasurementSource(area, "thermal_energy", d)}</div>
-      ${!isHouse ? `<div class="inspector-section"><div class="inspector-label">LAYOUT / ${this._layoutMode(area).toUpperCase()}</div><div class="layout-mode-status"><span>${this._layoutMode(area) === "docked" ? "MAGNETISCH ANGEDOCKT" : "FREI POSITIONIERT"}</span><strong>${this._layoutMode(area) === "docked" ? `REIHENFOLGE ${Number(area.dock_order || 0) + 1}` : `X ${layout.x} · Y ${layout.y}`}</strong></div><div class="layout-position compact-size">
+      ${!isHouse ? `<div class="inspector-section thermal-measure-section"><div class="inspector-label">THERMISCHE STOCKWERKSWERTE</div>${this._field("Vorlauftemperatur", `<select data-area-id="${this._esc(area.id)}" data-area-field="supply_temperature_entity">${this._entityOptions("temperature", area.supply_temperature_entity)}</select>`)}${this._field("Rücklauftemperatur", `<select data-area-id="${this._esc(area.id)}" data-area-field="return_temperature_entity">${this._entityOptions("temperature", area.return_temperature_entity)}</select>`)}</div><div class="inspector-section climate-section"><div class="inspector-label">RAUMKLIMA / THERMOSTAT · OPTIONAL</div>${this._field("Quelle", `<select data-area-id="${this._esc(area.id)}" data-area-field="climate_mode"><option value="" ${!area.climate_mode ? "selected" : ""}>Nicht konfiguriert</option><option value="climate" ${area.climate_mode === "climate" ? "selected" : ""}>Climate-Entity</option><option value="entities" ${area.climate_mode === "entities" ? "selected" : ""}>Separate Temperatur-Entities</option></select>`)}${area.climate_mode === "climate" ? this._field("Thermostat / Climate-Entity", `<select data-area-id="${this._esc(area.id)}" data-area-field="climate_entity">${this._entityOptions("climate", area.climate_entity)}</select>`) : area.climate_mode === "entities" ? `${this._field("Ist-Temperatur", `<select data-area-id="${this._esc(area.id)}" data-area-field="current_temperature_entity">${this._entityOptions("temperature", area.current_temperature_entity)}</select>`)}${this._field("Soll-Temperatur", `<select data-area-id="${this._esc(area.id)}" data-area-field="target_temperature_entity">${this._entityOptions("temperature", area.target_temperature_entity)}</select>`)}` : `<div class="measurement-source-empty">OPTIONAL · OHNE KONFIGURATION KEINE KLIMAANZEIGE</div>`}</div><div class="inspector-section"><div class="inspector-label">LAYOUT / ${this._layoutMode(area).toUpperCase()}</div><div class="layout-mode-status"><span>${this._layoutMode(area) === "docked" ? "MAGNETISCH ANGEDOCKT" : "FREI POSITIONIERT"}</span><strong>${this._layoutMode(area) === "docked" ? `REIHENFOLGE ${Number(area.dock_order || 0) + 1}` : `X ${layout.x} · Y ${layout.y}`}</strong></div><div class="layout-position compact-size">
         ${["w", "h"].map((key) => `<label><span>${key === "w" ? "BREITE" : "HÖHE"}</span><select data-area-id="${this._esc(area.id)}" data-layout-field="${key}">${Array.from({ length: key === "w" ? 6 : 4 }, (_, index) => index + 1).map((value) => `<option value="${value}" ${Number(layout[key] || 1) === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>`).join("")}
       </div><button class="small-action" type="button" data-action="toggle-layout-mode" data-area-id="${this._esc(area.id)}">${this._layoutMode(area) === "docked" ? "KACHEL FREI LÖSEN" : "KACHEL ANDOCKEN"}</button></div>` : ""}`;
   }
@@ -1949,7 +1988,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
       return;
     }
     if (action === "add-storage") {
-      this._draft.storage.push({ id: this._id("bat"), type: "battery", name: "Batterie", power_entity: "", soc_entity: "", charge_energy_entity: "", discharge_energy_entity: "" });
+      this._draft.storage.push({ id: this._id("bat"), type: "battery", name: "Teilspeicher", power_entity: "", soc_entity: "", charge_energy_entity: "", discharge_energy_entity: "", capacity_entity: "", capacity_kwh: 0 });
       this._render();
       return;
     }
@@ -2257,7 +2296,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
           if (this._isVisualRoot(area, this._draft)) area.dock_order = this._visualRootAreas(nextValue, this._draft).filter((item) => item.id !== area.id).length;
           this._normalizeDockOrder(nextValue, this._draft);
         }
-        if (["mode", "calculation_type", "level_id", "name", "basis_area_id", "parent_id"].includes(target.dataset.areaField)) this._render();
+        if (["mode", "calculation_type", "level_id", "name", "basis_area_id", "parent_id", "climate_mode"].includes(target.dataset.areaField)) this._render();
       }
     }
   }
@@ -2472,7 +2511,7 @@ class EnergySystemDashboardPanel extends HTMLElement {
         @keyframes flow-pattern-v { from { background-position:0 0; } to { background-position:0 44px; } }
         @keyframes flow-pattern-h { from { background-position:0 0; } to { background-position:44px 0; } }
         @keyframes flow-pattern-h-left { from { background-position:44px 0; } to { background-position:0 0; } }
-        .bus { max-width:1500px; margin:0 auto; height:46px; border-top:2px solid var(--line-strong); border-bottom:2px solid var(--line-strong); display:flex; align-items:center; justify-content:center; gap:18px; background:rgba(255,255,255,.018); font:700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.12em; }
+        .bus { max-width:1500px; margin:0 auto; height:46px; border:2px solid var(--line-strong); display:flex; align-items:center; justify-content:center; gap:18px; background:rgba(255,255,255,.018); font:700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.12em; }
         .bus strong { color:var(--active); font-size:14px; }
         .thermal-grid { max-width:1500px; margin:0 auto; display:flex; flex-direction:column; align-items:stretch; }
         .thermal-source-bank { width:100%; }
@@ -2788,6 +2827,42 @@ class EnergySystemDashboardPanel extends HTMLElement {
         .layout-mode-status span { color:var(--muted); font:700 9px/1 ui-monospace,monospace; }
         .layout-mode-status strong { font:700 9px/1 ui-monospace,monospace; }
         .layout-position.compact-size { grid-template-columns:repeat(2,1fr); }
+        .source-summary { margin-top:8px; border-top:1px solid var(--line); }
+        .source-summary-row { min-height:30px; display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:center; padding:5px 0; font:650 9px/1 ui-monospace,monospace; }
+        .source-summary-row + .source-summary-row { border-top:1px solid rgba(255,255,255,.055); }
+        .source-summary-row span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+        .source-summary-row strong { font-size:10px; }
+        .source-summary-row small { color:var(--muted); font-size:8px; }
+        .source-summary-row.reduced span::after { content:" / REDUCED"; color:var(--warn); }
+        .closed-bus, .closed-distribution { border-left:1px solid var(--active) !important; border-right:1px solid var(--active) !important; }
+        .combined-system-zone { display:flex; flex-direction:column; gap:0; }
+        .combined-energy-side { position:relative; }
+        .combined-flow-arrow { height:34px; position:relative; display:grid; place-items:center; color:var(--muted); font:700 8px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .combined-flow-arrow i { position:absolute; left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); background:var(--line-strong); }
+        .combined-flow-arrow.electric-down i::after, .combined-flow-arrow.thermal-up i::after { content:""; position:absolute; left:50%; width:7px; height:7px; border-right:2px solid currentColor; border-bottom:2px solid currentColor; }
+        .combined-flow-arrow.electric-down { color:var(--active); }
+        .combined-flow-arrow.electric-down i::after { bottom:3px; transform:translateX(-50%) rotate(45deg); }
+        .combined-flow-arrow.thermal-up { color:var(--thermal); }
+        .combined-flow-arrow.thermal-up i::after { top:3px; transform:translateX(-50%) rotate(225deg); }
+        .combined-flow-arrow span { position:relative; z-index:1; background:#0b0e11; padding:0 8px; }
+        .combined-building { border-left:1px solid var(--line-strong); border-right:1px solid var(--line-strong); }
+        .combined-floor-group { position:relative; min-height:0; display:grid; grid-template-columns:minmax(0,1fr); grid-template-areas:"electric" "content" "thermal"; align-items:stretch; border-top:1px solid var(--line-strong); background:#0e1216; transition:min-height .2s ease; }
+        .combined-floor-group:last-child { border-bottom:1px solid var(--line-strong); }
+        .combined-floor-indicator { position:absolute; left:50%; top:48px; transform:translateX(-50%); z-index:5; display:flex; align-items:center; gap:10px; min-height:28px; padding:0 10px; border:1px solid var(--line); background:#101418; }
+        .combined-floor-indicator strong { font:800 10px/1 ui-monospace,monospace; letter-spacing:.1em; }
+        .combined-floor-indicator span { color:var(--muted); font:700 8px/1 ui-monospace,monospace; }
+        .combined-floor-content { grid-area:content; align-self:stretch; min-width:0; min-height:86px; padding:54px 18px 18px; display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:0; background-image:linear-gradient(to right,rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.025) 1px,transparent 1px); background-size:calc(100% / 12) 100%,100% 42px; }
+        .combined-floor-content > .area-group { position:relative; grid-column:auto !important; grid-row:auto !important; align-self:center; min-width:180px; flex:0 1 calc((100% / 12) * var(--area-span,3) - 8px); margin:4px; }
+        .combined-electric-port, .combined-thermal-port { display:flex; flex-direction:row; justify-content:center; align-items:center; gap:14px; min-height:42px; padding:8px 12px; font:700 9px/1.2 ui-monospace,monospace; }
+        .combined-electric-port { grid-area:electric; border-bottom:1px solid var(--active); color:var(--active); text-align:center; }
+        .combined-thermal-port { grid-area:thermal; border-top:1px solid var(--thermal); color:var(--thermal); text-align:center; }
+        .combined-electric-port small, .combined-thermal-port small, .combined-thermal-port em { color:var(--muted); font-size:8px; font-style:normal; }
+        .combined-thermal-port strong { color:var(--text); }
+        .combined-area .area-tile-formula { display:none; }
+        .area-climate, .area-thermal-summary { display:flex; gap:10px; align-items:center; justify-content:space-between; min-height:28px; padding:6px 10px; border-top:1px solid var(--line); font:700 8px/1 ui-monospace,monospace; }
+        .area-climate span, .area-thermal-summary span { color:var(--muted); }
+        .area-climate strong, .area-thermal-summary strong { color:var(--text); }
+        .parent-climate strong { color:var(--good); }
         .readonly-card { display:block; overflow:hidden; background:var(--ha-card-background,var(--card-background-color,#111417)); color:var(--primary-text-color,#eef2f4); }
         .readonly-card .card-content { padding:0 12px 14px; }
         .card-head { min-height:58px; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 16px; border-bottom:1px solid var(--line); }

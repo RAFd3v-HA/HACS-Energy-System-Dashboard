@@ -1,3 +1,16 @@
+# Energy System Dashboard V0.5.0
+
+## V0.5.0 – Combined system view, room climate and grouped energy modules
+
+- New combined **SYSTEM** view: electrical flow enters the shared building stack from above; thermal flow enters the same floors from below.
+- Floor panels grow with expanded child areas and remain compact while children are collapsed.
+- Optional room climate per child from a `climate` entity or separate current/target temperature entities. Parent areas show the recursive average current room temperature only when climate values exist.
+- Optional supply and return temperatures per area/floor. Thermal floor ports can show supply temperature; return and calculated delta-T are shown when available.
+- PV is rendered as one main frame with summed current production and daily energy; configured PV sources are listed inside the same frame. Grid-operator reduction remains visible as `PRODUCTION / REDUCED`.
+- Batteries are rendered as one main frame with summed power, aggregated state of charge, total configured capacity and individual partial stores inside the same frame.
+- The **ELEKTRISCHE VERTEILUNG** frame is closed on both sides.
+- Existing calculations, generated Home Assistant sensors, parent/child hierarchy, floor ordering and read-only Lovelace card remain compatible.
+
 ## V0.4.4
 
 - Netzleistung wird normiert dargestellt: **Bezug positiv, Einspeisung negativ**. Die konfigurierte Vorzeichenrichtung der Quell-Entity bleibt erhalten und dient nur zur Interpretation des Rohwerts.
@@ -189,7 +202,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=V0.4.4
+/energy_system_dashboard/energy-system-card.js?v=0.5.0
 ```
 
 Home Assistant:
@@ -199,7 +212,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=V0.4.4
+URL: /energy_system_dashboard/energy-system-card.js?v=0.5.0
 Typ: JavaScript-Modul
 ```
 
@@ -208,7 +221,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=V0.4.4
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.5.0
       type: module
 ```
 
