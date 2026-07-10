@@ -1,16 +1,10 @@
-# ============================================================
 # ENERGY SYSTEM CARD – KOPIERBARE BEISPIELE
-# ============================================================
 
-# ------------------------------------------------------------
 # 1. GESAMTSYSTEM / STANDARD
-# ------------------------------------------------------------
 type: custom:energy-system-card
 view: system
 
-# ------------------------------------------------------------
 # 2. GESAMTSYSTEM / VOLLSTÄNDIG
-# ------------------------------------------------------------
 # type: custom:energy-system-card
 # view: system
 # display: full
@@ -20,67 +14,27 @@ view: system
 # show_daily_energy: true
 # show_status: true
 
-# ------------------------------------------------------------
 # 3. ELEKTRISCHE DETAILANSICHT
-# ------------------------------------------------------------
 # type: custom:energy-system-card
 # view: electrical
 # display: full
 # floor_selector: true
 # show_daily_energy: true
 
-# ------------------------------------------------------------
 # 4. THERMISCHE DETAILANSICHT
-# ------------------------------------------------------------
 # type: custom:energy-system-card
 # view: thermal
 # display: full
 # show_daily_energy: true
 # show_status: true
 
-# ------------------------------------------------------------
 # 5. GEBÄUDE MIT STOCKWERKSAUSWAHL
-# ------------------------------------------------------------
 # type: custom:energy-system-card
 # view: building
 # floor_selector: true
 # default_floor: EG
 
-# ------------------------------------------------------------
-# 6. FESTES ERDGESCHOSS
-# ------------------------------------------------------------
+# Parent/Child-Details standardmäßig öffnen
 # type: custom:energy-system-card
 # view: building
-# floor_selector: false
-# default_floor: EG
-
-# ------------------------------------------------------------
-# 7. EIGENES STOCKWERK
-# ------------------------------------------------------------
-# type: custom:energy-system-card
-# view: building
-# floor_selector: false
-# default_floor: Galerie
-
-# ------------------------------------------------------------
-# 8. KOMPAKTE SYSTEMKARTE
-# ------------------------------------------------------------
-# type: custom:energy-system-card
-# view: system
-# display: compact
-# show_daily_energy: true
-# show_status: true
-
-# ------------------------------------------------------------
-# 9. KOMPAKT OHNE TAGESENERGIE UND STATUS
-# ------------------------------------------------------------
-# type: custom:energy-system-card
-# view: system
-# display: compact
-# show_daily_energy: false
-# show_status: false
-
-# Alle Parent/Child-Details standardmäßig öffnen
-type: custom:energy-system-card
-view: building
-expand_children: true
+# expand_children: true
