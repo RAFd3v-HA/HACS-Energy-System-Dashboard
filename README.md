@@ -1,4 +1,15 @@
-# Energy System Dashboard V0.5.0
+# Energy System Dashboard V0.5.1
+
+## V0.5.1 – Flow- und Status-Cleanup
+
+- Animierte elektrische Abgänge zu jeder Gebäudeebene sind in SYSTEM wieder sichtbar; der elektrische Flow läuft über eine linke Sammelschiene von oben.
+- Der thermische Flow läuft spiegelbildlich über eine rechte Sammelschiene von unten nach oben. Beide Flows erreichen dieselben Stockwerke ohne sich zu überlagern.
+- Die gequetschten ELEKTRISCH/THERMISCH-Pfeilbeschriftungen wurden entfernt.
+- Fehlende Gesamtmesswerte werden nicht mehr als `KEIN MESSWERT` ausgegeben.
+- Eine einzelne PV-Quelle beziehungsweise ein einzelner Batteriespeicher zeigt wieder seinen konfigurierten Anlagen-/Gerätenamen.
+- Statusfarben: GRID Export grün / Import gelb; PV Produktion grün / 0 W rot / Begrenzung grün-orange; BAT <10 % rot / Entladen gelb / 100 % oder Laden grün / Standby grau.
+- Der Rahmen der elektrischen Verteilung ist wieder neutral; nur der Flow ist gelb.
+
 
 ## V0.5.0 – Combined system view, room climate and grouped energy modules
 
@@ -202,7 +213,7 @@ Die Karte verwendet dieselbe zentrale Topologie und dieselben Berechnungsergebni
 ### JavaScript-Ressource
 
 ```text
-/energy_system_dashboard/energy-system-card.js?v=0.5.0
+/energy_system_dashboard/energy-system-card.js?v=0.5.1
 ```
 
 Home Assistant:
@@ -212,7 +223,7 @@ Einstellungen → Dashboards → Ressourcen
 ```
 
 ```text
-URL: /energy_system_dashboard/energy-system-card.js?v=0.5.0
+URL: /energy_system_dashboard/energy-system-card.js?v=0.5.1
 Typ: JavaScript-Modul
 ```
 
@@ -221,7 +232,7 @@ Bei YAML-verwalteten Ressourcen:
 ```yaml
 lovelace:
   resources:
-    - url: /energy_system_dashboard/energy-system-card.js?v=0.5.0
+    - url: /energy_system_dashboard/energy-system-card.js?v=0.5.1
       type: module
 ```
 
